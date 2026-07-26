@@ -286,9 +286,14 @@ model LocationPageConfig {
   locationId String   @unique
   location   Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
 
-  bannerImageUrl String?
-  bannerText     String?
-  floorPlanUrl   String?
+  // Set together whenever a banner image is uploaded through lib/storage.ts:
+  // bannerImageUrl is always our own /api/locations/[id]/banner route in that
+  // case (never an admin-typed external URL), and bannerImageMimeType is what
+  // that route sends as Content-Type — same pairing as Setting.logoMimeType.
+  bannerImageUrl      String?
+  bannerImageMimeType String?
+  bannerText          String?
+  floorPlanUrl        String?
 
   // Widget toggles/config: e.g. { "weather": {"enabled": true, "city": "..."},
   // "transit": {...}, "localLinks": [...] } — same schema-flexibility

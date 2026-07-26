@@ -6,8 +6,17 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { requirePermission } from "@/lib/rbac";
 import { parseFieldSchema, extractCustomFieldsFromFormData, validateCustomFieldValues } from "@/lib/asset-fields";
+import {
+  saveAttachmentFile,
+  deleteAttachmentFile,
+  bannerStorageKey,
+  MAX_BANNER_IMAGE_BYTES,
+  MAX_BANNER_IMAGE_MB,
+} from "@/lib/storage";
 import type { DeleteActionState } from "@/components/ui/delete-button";
 import type { FormActionState } from "@/components/ui/action-form";
+
+const ALLOWED_BANNER_IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp"];
 
 export async function createLocation(_prevState: FormActionState, formData: FormData): Promise<FormActionState> {
   await requirePermission(Permission.MANAGE_LOCATIONS, Role.SUPER_ADMIN, Role.DEPARTMENT_MANAGER);
@@ -144,6 +153,89 @@ export async function deleteLocationSlaPolicy(locationId: string, priority: Tick
   await requirePermission(Permission.MANAGE_LOCATIONS, Role.SUPER_ADMIN, Role.DEPARTMENT_MANAGER);
 
   await prisma.locationSlaPolicy.deleteMany({ where: { locationId, priority } });
+
+  revalidatePath(`/locations/${locationId}`);
+}
+
+// Creates or updates this location's page-personalization config
+// (lib/locations.ts resolves it up the parent chain for locations with no
+// config of their own). A newly-uploaded banner image always wins over
+// whatever banner was there before; leaving the file input empty keeps the
+// existing one untouched rather than clearing it — use
+// deleteLocationPageBanner to remove it explicitly.
+export async function upsertLocationPageConfig(
+  locationId: string,
+  _prevState: FormActionState,
+  formData: FormData
+): Promise<FormActionState> {
+  const user = await requirePermission(Permission.MANAGE_LOCATIONS, Role.SUPER_ADMIN, Role.DEPARTMENT_MANAGER);
+
+  const bannerText = String(formData.get("bannerText") ?? "").trim() || null;
+  const floorPlanUrl = String(formData.get("floorPlanUrl") ?? "").trim() || null;
+  const widgetConfigRaw = String(formData.get("widgetConfig") ?? "").trim();
+
+  let widgetConfig: Prisma.InputJsonValue | undefined = undefined;
+  if (widgetConfigRaw) {
+    try {
+      const parsed = JSON.parse(widgetConfigRaw);
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        return { error: "Widget config must be a JSON object, e.g. {\"weather\": {\"enabled\": true}}" };
+      }
+      widgetConfig = parsed;
+    } catch {
+      return { error: "Widget config is not valid JSON" };
+    }
+  }
+
+  const banner = formData.get("bannerImage");
+  let bannerFields: { bannerImageUrl: string; bannerImageMimeType: string } | undefined;
+  if (banner instanceof File && banner.size > 0) {
+    if (banner.size > MAX_BANNER_IMAGE_BYTES) {
+      return { error: `Banner image exceeds the ${MAX_BANNER_IMAGE_MB}MB limit.` };
+    }
+    if (!ALLOWED_BANNER_IMAGE_TYPES.includes(banner.type)) {
+      return { error: "Banner image must be a PNG, JPEG, or WebP image." };
+    }
+    await saveAttachmentFile(bannerStorageKey(locationId), Buffer.from(await banner.arrayBuffer()));
+    bannerFields = {
+      bannerImageUrl: `/api/locations/${locationId}/banner`,
+      bannerImageMimeType: banner.type,
+    };
+  }
+
+  await prisma.locationPageConfig.upsert({
+    where: { locationId },
+    create: {
+      locationId,
+      bannerText,
+      floorPlanUrl,
+      widgetConfig,
+      updatedByUserId: user.id,
+      ...bannerFields,
+    },
+    update: {
+      bannerText,
+      floorPlanUrl,
+      widgetConfig: widgetConfig ?? Prisma.JsonNull,
+      updatedByUserId: user.id,
+      ...bannerFields,
+    },
+  });
+
+  revalidatePath(`/locations/${locationId}`);
+  return null;
+}
+
+// Removes just the banner image, leaving bannerText/floorPlanUrl/widgetConfig
+// untouched — mirrors deleteLocationSlaPolicy's scoped-removal shape.
+export async function deleteLocationPageBanner(locationId: string) {
+  await requirePermission(Permission.MANAGE_LOCATIONS, Role.SUPER_ADMIN, Role.DEPARTMENT_MANAGER);
+
+  await deleteAttachmentFile(bannerStorageKey(locationId));
+  await prisma.locationPageConfig.updateMany({
+    where: { locationId },
+    data: { bannerImageUrl: null, bannerImageMimeType: null },
+  });
 
   revalidatePath(`/locations/${locationId}`);
 }

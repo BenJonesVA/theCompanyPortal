@@ -26,6 +26,20 @@ export const MAX_ATTACHMENT_MB = 20;
 export const MAX_LOGO_BYTES = 2 * 1024 * 1024;
 export const MAX_LOGO_MB = 2;
 
+// Location page banners — one per Location, stored through the same
+// saveAttachmentFile/readAttachmentFile/deleteAttachmentFile functions as
+// ticket attachments (see app/api/locations/[id]/banner/route.ts), keyed by
+// `bannerStorageKey(locationId)` rather than the Location's own id so it
+// can never collide with a real Attachment row's cuid on local disk (one
+// flat directory, no per-model namespacing). A higher byte cap than the
+// logo since these are wide hero images rather than a small mark.
+export const MAX_BANNER_IMAGE_BYTES = 5 * 1024 * 1024;
+export const MAX_BANNER_IMAGE_MB = 5;
+
+export function bannerStorageKey(locationId: string): string {
+  return `banner-${locationId}`;
+}
+
 const LOGO_KEY = "branding-logo";
 const ATTACHMENT_PREFIX = "attachments/";
 

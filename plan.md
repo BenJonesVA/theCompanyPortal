@@ -18,7 +18,7 @@ Forked `psa`, replaced `prisma/schema.prisma` with the Phase 1 domain (Users/org
 
 **Done when:** `STORAGE_DRIVER=local` (default) behaves exactly as today, and switching to `STORAGE_DRIVER=s3` against a real bucket (or local MinIO for dev testing) round-trips an upload/download/delete through the identical code paths with no call-site changes.
 
-## Phase 3 — Location Page Config admin UI + resolver
+## Phase 3 — Location Page Config admin UI + resolver ✅ done
 
 `LocationPageConfig` and the `Location` parent-chain hierarchy exist in the schema with zero UI today. Build:
 - Admin CRUD for `LocationPageConfig` (banner image/text, floor plan link, widget-config JSON) scoped per `Location` — banner image upload goes through Phase 2's storage abstraction.

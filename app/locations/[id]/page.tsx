@@ -4,12 +4,16 @@ import { Permission, TicketPriority, Role } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { requireAuth } from "@/lib/rbac";
 import { parseFieldSchema } from "@/lib/asset-fields";
+import { resolveLocationPage } from "@/lib/locations";
+import { MAX_BANNER_IMAGE_MB } from "@/lib/storage";
 import {
   createAsset,
   updateLocation,
   deleteLocation,
   upsertLocationSlaPolicy,
   deleteLocationSlaPolicy,
+  upsertLocationPageConfig,
+  deleteLocationPageBanner,
 } from "../actions";
 import { ActionForm } from "@/components/ui/action-form";
 import { DeleteButton } from "@/components/ui/delete-button";
@@ -43,6 +47,7 @@ export default async function LocationDetailPage({
     where: { id },
     include: {
       parent: { select: { id: true, name: true } },
+      pageConfig: true,
       employees: { orderBy: { name: "asc" } },
       assets: { include: { category: true }, orderBy: { createdAt: "asc" } },
       tickets: {
@@ -67,9 +72,10 @@ export default async function LocationDetailPage({
     fields: parseFieldSchema(category.fieldSchema),
   }));
 
-  const [locationSlaPolicies, globalSlaPolicies] = await Promise.all([
+  const [locationSlaPolicies, globalSlaPolicies, resolvedPage] = await Promise.all([
     prisma.locationSlaPolicy.findMany({ where: { locationId: location.id } }),
     prisma.slaPolicy.findMany(),
+    resolveLocationPage(location.id),
   ]);
   const locationSlaByPriority = new Map(locationSlaPolicies.map((p) => [p.priority, p]));
   const globalSlaByPriority = new Map(globalSlaPolicies.map((p) => [p.priority, p]));
@@ -77,6 +83,8 @@ export default async function LocationDetailPage({
   const createAssetForLocation = createAsset.bind(null, location.id);
   const updateLocationForLocation = updateLocation.bind(null, location.id);
   const deleteLocationForLocation = deleteLocation.bind(null, location.id);
+  const upsertPageConfigForLocation = upsertLocationPageConfig.bind(null, location.id);
+  const deletePageBannerForLocation = deleteLocationPageBanner.bind(null, location.id);
 
   return (
     <div className="mx-auto flex max-w-5xl flex-col gap-4">
@@ -297,6 +305,136 @@ export default async function LocationDetailPage({
         </div>
       </Card>
       )}
+
+      {/* Location page config — personalizes this location's employee-portal
+          landing page. See lib/locations.ts for how a location with no
+          config of its own inherits up the parent chain. */}
+      <Card>
+        <CardHeader>
+          <h2 className="text-[13.5px] font-semibold text-fg">Page config</h2>
+          <p className="mt-1 text-[12px] text-fg-muted">
+            Banner, floor plan link, and widgets shown to employees at this location. A field left
+            unset here is inherited from {location.parent ? location.parent.name : "the org-wide default"}.
+          </p>
+        </CardHeader>
+
+        {canManage && (
+          <div className="border-b border-border p-4">
+          <ActionForm
+            action={upsertPageConfigForLocation}
+            encType="multipart/form-data"
+            className="flex flex-col gap-4"
+          >
+            <div className="flex items-center gap-4">
+              <div className="flex h-16 w-28 flex-none items-center justify-center overflow-hidden rounded-lg border border-border-strong bg-surface-2">
+                {location.pageConfig?.bannerImageMimeType ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={`/api/locations/${location.id}/banner?v=${location.pageConfig.updatedAt.getTime()}`}
+                    alt="Current banner"
+                    className="h-full w-full object-cover"
+                  />
+                ) : (
+                  <span className="text-[11px] text-fg-subtle">No banner</span>
+                )}
+              </div>
+              <div className="flex-1">
+                <label className="block">
+                  <span className="mb-1.5 block text-[11.5px] font-medium text-fg-subtle">
+                    Banner image (PNG, JPEG, or WebP — max {MAX_BANNER_IMAGE_MB}MB)
+                  </span>
+                  <input
+                    type="file"
+                    name="bannerImage"
+                    accept="image/png,image/jpeg,image/webp"
+                    className="block w-full text-[13px] text-fg-muted file:mr-3 file:rounded-lg file:border-0 file:bg-surface-2 file:px-3 file:py-[6px] file:text-[13px] file:font-semibold file:text-fg hover:file:bg-surface-3"
+                  />
+                </label>
+              </div>
+            </div>
+
+            <label className="block">
+              <span className="mb-1.5 block text-[11.5px] font-medium text-fg-subtle">Banner text</span>
+              <input
+                name="bannerText"
+                defaultValue={location.pageConfig?.bannerText ?? ""}
+                placeholder="Welcome to the Downtown Branch"
+                className="w-full rounded-lg border border-border-strong bg-surface px-3 py-[7px] text-[13.5px] text-fg focus:outline-none focus:ring-2 focus:ring-focus"
+              />
+            </label>
+
+            <label className="block">
+              <span className="mb-1.5 block text-[11.5px] font-medium text-fg-subtle">Floor plan link</span>
+              <input
+                name="floorPlanUrl"
+                type="url"
+                defaultValue={location.pageConfig?.floorPlanUrl ?? ""}
+                placeholder="https://..."
+                className="w-full rounded-lg border border-border-strong bg-surface px-3 py-[7px] text-[13.5px] text-fg focus:outline-none focus:ring-2 focus:ring-focus"
+              />
+            </label>
+
+            <label className="block">
+              <span className="mb-1.5 block text-[11.5px] font-medium text-fg-subtle">
+                Widget config (JSON, optional — merges over inherited widgets)
+              </span>
+              <textarea
+                name="widgetConfig"
+                rows={4}
+                defaultValue={
+                  location.pageConfig?.widgetConfig
+                    ? JSON.stringify(location.pageConfig.widgetConfig, null, 2)
+                    : ""
+                }
+                placeholder='{"weather": {"enabled": true, "city": "Austin, TX"}}'
+                className="w-full rounded-lg border border-border-strong bg-surface px-3 py-[7px] font-mono text-[12.5px] text-fg focus:outline-none focus:ring-2 focus:ring-focus"
+              />
+            </label>
+
+            <div className="flex justify-end">
+              <Button type="submit" variant="primary">
+                Save
+              </Button>
+            </div>
+          </ActionForm>
+          {location.pageConfig?.bannerImageMimeType && (
+            <form action={deletePageBannerForLocation} className="mt-2 flex justify-end">
+              <Button type="submit" variant="ghost" size="sm">
+                Remove banner
+              </Button>
+            </form>
+          )}
+          </div>
+        )}
+
+        <div className="p-4">
+          <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-fg-subtle">
+            Effective for employees here
+          </h3>
+          <dl className="grid grid-cols-2 gap-3 text-[13px]">
+            <div>
+              <dt className="text-fg-subtle">Banner image</dt>
+              <dd className="text-fg">{resolvedPage.bannerImageUrl ? "Set" : "None"}</dd>
+            </div>
+            <div>
+              <dt className="text-fg-subtle">Banner text</dt>
+              <dd className="text-fg">{resolvedPage.bannerText ?? "—"}</dd>
+            </div>
+            <div>
+              <dt className="text-fg-subtle">Floor plan</dt>
+              <dd className="text-fg">{resolvedPage.floorPlanUrl ?? "—"}</dd>
+            </div>
+            <div>
+              <dt className="text-fg-subtle">Widgets</dt>
+              <dd className="text-fg">
+                {Object.keys(resolvedPage.widgetConfig).length > 0
+                  ? Object.keys(resolvedPage.widgetConfig).join(", ")
+                  : "—"}
+              </dd>
+            </div>
+          </dl>
+        </div>
+      </Card>
 
       {/* Assets */}
       <Card>
