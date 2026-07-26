@@ -12,7 +12,7 @@ See `ARCHITECTURE.md` for the durable design of the Approval State Machine and t
 
 Forked `psa`, replaced `prisma/schema.prisma` with the Phase 1 domain (Users/org hierarchy, Locations, Departments, LocationPageConfig, Tickets, the Approval workflow engine schema), validated with a real migration, then brought `app/`/`lib/`/`components/`/`prisma/seed.ts` back into sync with it (renames, MSP-billing removal, single-actor-type auth). Verified end-to-end: real login flow, seeded data, every major route rendering. Full design rationale in `ARCHITECTURE.md`.
 
-## Phase 2 — File storage abstraction: local disk + S3
+## Phase 2 — File storage abstraction: local disk + S3 ✅ done
 
 `lib/storage.ts` today is hardcoded to local disk (`saveAttachmentFile`/`readAttachmentFile`/`deleteAttachmentFile`/`saveLogoFile`/`readLogoFile`, all keyed by cuid, backing ticket `Attachment`s and the branding logo) — its own comment already flags this as "your call over S3/R2 for this deployment." Add an S3-compatible backend as a second driver, selected by env var (e.g. `STORAGE_DRIVER=local|s3`, plus `S3_BUCKET`/`S3_REGION`/`S3_ACCESS_KEY_ID`/`S3_SECRET_ACCESS_KEY`/optional `S3_ENDPOINT` for R2/MinIO compatibility), behind the *same* function signatures so every existing call site (ticket attachments, branding logo) works unmodified regardless of driver. Keep the existing proxy-read pattern (`app/api/attachments/[id]/route.ts` streams bytes through the app rather than redirecting to a public URL) so the internal-only/permission gating already enforced there keeps working identically on S3 — don't switch to presigned-URL redirects unless a real need for that shows up later.
 
