@@ -116,6 +116,7 @@ enum Permission {
   MANAGE_LOCATION_PAGES
   MANAGE_APPROVAL_WORKFLOWS
   MANAGE_NEWS
+  MANAGE_EVENTS
   VIEW_REPORTS
 }
 
@@ -199,6 +200,8 @@ model User {
   locationPageConfigEdits LocationPageConfig[]    @relation("LocationPageConfigEditor")
   approvalStageTemplates  ApprovalStageTemplate[]
   newsPosts               NewsPost[]              @relation("NewsPostAuthor")
+  calendarEventsCreated   CalendarEvent[]         @relation("CalendarEventCreator")
+  eventRsvps              EventRsvp[]
 
   @@index([role])
   @@index([locationId])
@@ -224,9 +227,10 @@ model Department {
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
-  employees User[]     @relation("DepartmentEmployees")
-  boards    Board[]
-  newsPosts NewsPost[]
+  employees      User[]          @relation("DepartmentEmployees")
+  boards         Board[]
+  newsPosts      NewsPost[]
+  calendarEvents CalendarEvent[]
 
   @@index([managerId])
 }
@@ -259,6 +263,7 @@ model Location {
   slaPolicies          LocationSlaPolicy[]
   pageConfig           LocationPageConfig?
   newsPosts            NewsPost[]
+  calendarEvents       CalendarEvent[]
 
   @@index([parentId])
   @@index([type])
@@ -356,6 +361,70 @@ model NewsPost {
   @@index([status, publishedAt])
   @@index([targetDepartmentId])
   @@index([targetLocationId])
+}
+
+enum CalendarEventCategory {
+  HOLIDAY
+  DEPARTMENT_EVENT
+  OFFICE_EVENT
+  MAINTENANCE_WINDOW
+}
+
+// Per-user attendance response to a CalendarEvent.
+enum RsvpStatus {
+  GOING
+  MAYBE
+  NOT_GOING
+}
+
+// Company calendar entries — holidays, department events, office events,
+// maintenance windows. Audience targeting reuses NewsPost's nullable-
+// condition-axis shape, minus the role axis (events aren't role-restricted):
+// both targetDepartmentId and targetLocationId null means visible org-wide.
+// targetLocationId reaches every location *below* it in the hierarchy, same
+// ancestor-chain resolution as NewsPost — see lib/calendar.ts.
+model CalendarEvent {
+  id          String                @id @default(cuid())
+  title       String
+  description String?               @db.Text
+  startsAt    DateTime              @db.Timestamptz(3)
+  endsAt      DateTime              @db.Timestamptz(3)
+  category    CalendarEventCategory @default(OFFICE_EVENT)
+
+  targetDepartmentId String?
+  targetDepartment   Department? @relation(fields: [targetDepartmentId], references: [id], onDelete: SetNull)
+  targetLocationId   String?
+  targetLocation     Location?   @relation(fields: [targetLocationId], references: [id], onDelete: SetNull)
+
+  createdById String
+  createdBy   User   @relation("CalendarEventCreator", fields: [createdById], references: [id])
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  rsvps EventRsvp[]
+
+  @@index([startsAt])
+  @@index([targetDepartmentId])
+  @@index([targetLocationId])
+}
+
+// One row per user per event — status is nullable-free (a user with no
+// opinion simply has no row), same "row existence is the state" shape as
+// TicketWatcher.
+model EventRsvp {
+  id      String        @id @default(cuid())
+  eventId String
+  event   CalendarEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  userId  String
+  user    User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status  RsvpStatus
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@unique([eventId, userId])
+  @@index([userId])
 }
 
 // ── Boards & Board Membership (RBAC scoping) ──────────────

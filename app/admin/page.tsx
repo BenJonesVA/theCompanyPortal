@@ -103,6 +103,12 @@ const SECTIONS: Section[] = [
     description: "Author and target news posts shown on the portal home.",
     permission: Permission.MANAGE_NEWS,
   },
+  {
+    href: "/admin/events",
+    label: "Calendar Events",
+    description: "Holidays, department/office events, and maintenance windows.",
+    permission: Permission.MANAGE_EVENTS,
+  },
 ];
 
 export default async function AdminHubPage() {

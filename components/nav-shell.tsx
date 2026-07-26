@@ -33,6 +33,7 @@ const HUB_PERMISSIONS: Permission[] = [
   Permission.MANAGE_SLA,
   Permission.MANAGE_AUTOMATION,
   Permission.MANAGE_NEWS,
+  Permission.MANAGE_EVENTS,
 ];
 
 // Additive: a link shows for SUPER_ADMIN/DEPARTMENT_MANAGER as before, or
@@ -61,6 +62,7 @@ function manageLinks(role: Role | undefined, permissions: Permission[]) {
 const EMPLOYEE_NAV_LINKS = [
   { href: "/portal", label: "Portal" },
   { href: "/portal/kb", label: "Knowledge Base" },
+  { href: "/portal/events", label: "Events" },
   { href: "/portal/tickets", label: "My Tickets" },
 ];
 

@@ -73,6 +73,11 @@ export function getPermissionCatalog(): { key: Permission; label: string; descri
       description: "Author, target, and publish company news posts.",
     },
     {
+      key: Permission.MANAGE_EVENTS,
+      label: "Manage events",
+      description: "Create and target calendar events (holidays, office events, maintenance windows).",
+    },
+    {
       key: Permission.VIEW_REPORTS,
       label: "View reports",
       description: "Access the Reports dashboard (SLA compliance, utilization, CSAT, etc.).",

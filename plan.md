@@ -46,7 +46,7 @@ Wire Phase 5's targeted news query into Phase 4's "Company News" placeholder on 
 
 **Done when:** an employee's portal home shows news actually targeted to their department/location/role, and content targeted elsewhere doesn't leak through.
 
-## Phase 7 — Calendar/Events: schema + admin UI
+## Phase 7 — Calendar/Events: schema + admin UI ✅ done
 
 New models: `CalendarEvent` (title, description, start/end, location/department/global scope, category — holiday/dept event/office event/maintenance window) and `EventRsvp` (per-user attendance). Admin authoring UI mirroring Phase 5's pattern. iCal export deferred to this phase's tail end only if time allows — otherwise its own follow-up.
 
