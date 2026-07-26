@@ -54,10 +54,13 @@ function manageLinks(role: Role | undefined, permissions: Permission[]) {
   return links;
 }
 
+// Portal first (home), then Knowledge Base — tickets demoted to last since
+// the portal home no longer treats them as the primary reason to be here
+// (see app/portal/page.tsx).
 const EMPLOYEE_NAV_LINKS = [
   { href: "/portal", label: "Portal" },
-  { href: "/portal/tickets", label: "My Tickets" },
   { href: "/portal/kb", label: "Knowledge Base" },
+  { href: "/portal/tickets", label: "My Tickets" },
 ];
 
 function Logomark({ logoUrl }: { logoUrl?: string | null }) {

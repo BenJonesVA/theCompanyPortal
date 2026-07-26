@@ -26,7 +26,7 @@ Forked `psa`, replaced `prisma/schema.prisma` with the Phase 1 domain (Users/org
 
 **Done when:** an admin can set a Branch's banner/widgets, an employee at that Branch resolves to it, and an employee at a Branch with no config resolves up to its Regional Hub/Corporate HQ/global default correctly.
 
-## Phase 4 — Portal-first dashboard redesign
+## Phase 4 — Portal-first dashboard redesign ✅ done
 
 Redesign `app/portal/page.tsx` (the `EMPLOYEE` home) to foreground: the resolved location banner (Phase 3), a "Company News" card in an empty state (until Phase 5/6 lands), an "Upcoming Events" card in an empty state (until Phase 7/8 lands), and quick links — with the existing "My open tickets" list demoted to a smaller card rather than the dominant content. Reorder `components/nav-shell.tsx`'s employee nav accordingly.
 
