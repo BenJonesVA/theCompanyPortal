@@ -334,7 +334,7 @@ export default async function LocationDetailPage({
                 {location.pageConfig?.bannerImageMimeType ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img
-                    src={`/api/locations/${location.id}/banner?v=${location.pageConfig.updatedAt.getTime()}`}
+                    src={`/portal/locations/${location.id}/banner?v=${location.pageConfig.updatedAt.getTime()}`}
                     alt="Current banner"
                     className="h-full w-full object-cover"
                   />

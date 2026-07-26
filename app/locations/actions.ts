@@ -198,7 +198,7 @@ export async function upsertLocationPageConfig(
     }
     await saveAttachmentFile(bannerStorageKey(locationId), Buffer.from(await banner.arrayBuffer()));
     bannerFields = {
-      bannerImageUrl: `/api/locations/${locationId}/banner`,
+      bannerImageUrl: `/portal/locations/${locationId}/banner`,
       bannerImageMimeType: banner.type,
     };
   }

@@ -28,7 +28,7 @@ export const MAX_LOGO_MB = 2;
 
 // Location page banners — one per Location, stored through the same
 // saveAttachmentFile/readAttachmentFile/deleteAttachmentFile functions as
-// ticket attachments (see app/api/locations/[id]/banner/route.ts), keyed by
+// ticket attachments (see app/portal/locations/[id]/banner/route.ts), keyed by
 // `bannerStorageKey(locationId)` rather than the Location's own id so it
 // can never collide with a real Attachment row's cuid on local disk (one
 // flat directory, no per-model namespacing). A higher byte cap than the
@@ -41,7 +41,7 @@ export function bannerStorageKey(locationId: string): string {
 }
 
 // NewsPost cover images — same one-per-row shape and reasoning as location
-// banners above (see app/api/news/[id]/cover/route.ts).
+// banners above (see app/portal/news/[id]/cover/route.ts).
 export const MAX_NEWS_COVER_BYTES = MAX_BANNER_IMAGE_BYTES;
 export const MAX_NEWS_COVER_MB = MAX_BANNER_IMAGE_MB;
 

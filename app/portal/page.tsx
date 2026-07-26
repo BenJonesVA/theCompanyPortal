@@ -2,12 +2,15 @@ import Link from "next/link";
 import { requireAuth } from "@/lib/rbac";
 import { prisma } from "@/lib/prisma";
 import { resolveLocationPage, type ResolvedLocationPage } from "@/lib/locations";
+import { listVisibleNewsPosts } from "@/lib/news";
+import { markdownSnippet } from "@/lib/format";
 import { StatusBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader } from "@/components/ui/card";
 
 const OPEN_STATUSES = ["OPEN", "IN_PROGRESS", "WAITING_ON_REQUESTER"] as const;
 const OPEN_TICKETS_PREVIEW = 4;
+const NEWS_PREVIEW = 3;
 
 const EMPTY_PAGE: ResolvedLocationPage = { bannerImageUrl: null, bannerText: null, floorPlanUrl: null, widgetConfig: {} };
 
@@ -29,7 +32,7 @@ function QuickLink({ href, label, primary = false }: { href: string; label: stri
 export default async function PortalPage() {
   const user = await requireAuth();
 
-  const [location, openTickets, resolvedPage] = await Promise.all([
+  const [location, openTickets, resolvedPage, newsPosts] = await Promise.all([
     user.locationId ? prisma.location.findUnique({ where: { id: user.locationId } }) : null,
     prisma.ticket.findMany({
       where: { requesterId: user.id, status: { in: [...OPEN_STATUSES] } },
@@ -37,9 +40,11 @@ export default async function PortalPage() {
       include: { board: true },
     }),
     user.locationId ? resolveLocationPage(user.locationId) : Promise.resolve(EMPTY_PAGE),
+    listVisibleNewsPosts(user),
   ]);
 
   const previewTickets = openTickets.slice(0, OPEN_TICKETS_PREVIEW);
+  const previewNews = newsPosts.slice(0, NEWS_PREVIEW);
 
   return (
     <div className="flex flex-col gap-6">
@@ -74,18 +79,58 @@ export default async function PortalPage() {
         {resolvedPage.floorPlanUrl && <QuickLink href={resolvedPage.floorPlanUrl} label="Floor plan" />}
       </div>
 
-      {/* Company News / Upcoming Events — placeholders until Phase 5/6 (News)
-          and Phase 7/8 (Calendar) land; both will key off the same
-          Location/Department/Role targeting and reuse lib/locations.ts's
-          resolver shape. */}
+      {/* Company News — targeted by department/location/role via
+          lib/news.ts's listVisibleNewsPosts (Phase 5/6). Upcoming Events
+          stays a placeholder until Phase 7/8 (Calendar) lands, which will
+          reuse the same targeting shape. */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Card>
-          <CardHeader>
+          <CardHeader className="flex items-center justify-between">
             <h2 className="text-[13.5px] font-semibold text-fg">Company news</h2>
+            {newsPosts.length > NEWS_PREVIEW && (
+              <Link href="/portal/news">
+                <Button variant="ghost" size="sm">
+                  View all
+                </Button>
+              </Link>
+            )}
           </CardHeader>
-          <p className="px-5 py-8 text-center text-[13.5px] text-fg-muted">
-            No news posted yet. Check back soon.
-          </p>
+          {previewNews.length === 0 ? (
+            <p className="px-5 py-8 text-center text-[13.5px] text-fg-muted">
+              No news posted yet. Check back soon.
+            </p>
+          ) : (
+            <ul className="divide-y divide-grid">
+              {previewNews.map((post) => (
+                <li key={post.id}>
+                  <Link
+                    href={`/portal/news/${post.id}`}
+                    className="flex gap-3 px-5 py-3.5 hover:bg-surface-2"
+                  >
+                    {post.coverImageUrl && (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={post.coverImageUrl}
+                        alt=""
+                        className="h-12 w-16 flex-none rounded-md object-cover"
+                      />
+                    )}
+                    <div className="min-w-0">
+                      <div className="truncate text-[13.5px] font-semibold text-fg">{post.title}</div>
+                      <div className="mt-0.5 line-clamp-2 text-[12px] text-fg-subtle">
+                        {markdownSnippet(post.body)}
+                      </div>
+                      {post.publishedAt && (
+                        <div className="mt-1 text-[11px] text-fg-subtle">
+                          {post.publishedAt.toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                        </div>
+                      )}
+                    </div>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
         </Card>
         <Card>
           <CardHeader>

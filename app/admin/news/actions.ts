@@ -82,7 +82,7 @@ export async function createNewsPost(_prevState: FormActionState, formData: Form
     await saveAttachmentFile(newsCoverStorageKey(post.id), Buffer.from(await cover.arrayBuffer()));
     await prisma.newsPost.update({
       where: { id: post.id },
-      data: { coverImageUrl: `/api/news/${post.id}/cover`, coverImageMimeType: cover.type },
+      data: { coverImageUrl: `/portal/news/${post.id}/cover`, coverImageMimeType: cover.type },
     });
   }
 
@@ -117,7 +117,7 @@ export async function updateNewsPost(
     data: {
       ...fields,
       publishedAt,
-      ...(cover ? { coverImageUrl: `/api/news/${postId}/cover`, coverImageMimeType: cover.type } : {}),
+      ...(cover ? { coverImageUrl: `/portal/news/${postId}/cover`, coverImageMimeType: cover.type } : {}),
     },
   });
 

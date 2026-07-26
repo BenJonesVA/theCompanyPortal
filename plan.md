@@ -40,7 +40,7 @@ New models: a `NewsPost` (title, rich body, author, published/draft state, publi
 
 **Done when:** an admin can author and target a news post, and it's queryable by "what's visible to this user" (department/location/role match).
 
-## Phase 6 — News feed on the dashboard
+## Phase 6 — News feed on the dashboard ✅ done
 
 Wire Phase 5's targeted news query into Phase 4's "Company News" placeholder on `/portal` (and optionally a smaller feed on `/`). Replaces the empty state with real, permission/targeting-filtered content.
 

@@ -2,9 +2,15 @@ import { prisma } from "@/lib/prisma";
 import { requireAuth } from "@/lib/rbac";
 import { readAttachmentFile, bannerStorageKey } from "@/lib/storage";
 
-// Gated by auth (not public like the branding logo) — a location banner may
-// show internal-only content, and every viewer is already an authenticated
-// employee by the time they'd see one rendered.
+// Nested under /portal (not /api/locations) so this stays reachable for
+// EMPLOYEE-role sessions confined by middleware.ts to that path — same
+// reasoning as app/portal/attachments/[id]/route.ts. Elevated roles aren't
+// blocked from /portal paths either, so the admin location-detail page's
+// own banner preview works unchanged through this same route.
+//
+// Gated by auth only (not public like the branding logo) — a location
+// banner isn't targeted/restricted content, every authenticated employee
+// can see any location's banner.
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   await requireAuth();
 

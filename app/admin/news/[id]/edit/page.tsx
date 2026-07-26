@@ -60,7 +60,7 @@ export default async function EditNewsPostPage({ params }: { params: Promise<{ i
               <div className="mt-2 flex items-center gap-3">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
-                  src={`/api/news/${post.id}/cover?v=${post.updatedAt.getTime()}`}
+                  src={`/portal/news/${post.id}/cover?v=${post.updatedAt.getTime()}`}
                   alt="Current cover"
                   className="h-16 w-28 rounded-lg border border-border-strong object-cover"
                 />
