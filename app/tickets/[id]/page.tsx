@@ -1,0 +1,870 @@
+import Link from "next/link";
+import { notFound } from "next/navigation";
+import { prisma } from "@/lib/prisma";
+import { requireAuth } from "@/lib/rbac";
+import type { Prisma, TicketPriority, TicketStatus } from "@prisma/client";
+import {
+  addComment,
+  updateTicketStatus,
+  updateTicketPriority,
+  assignTicket,
+  updateTicketDueDate,
+  logTime,
+  linkAsset,
+  unlinkAsset,
+  uploadAttachment,
+  deleteAttachment,
+  startTimer,
+  stopTimer,
+  linkKbArticle,
+  unlinkKbArticle,
+  watchTicket,
+  unwatchTicket,
+  linkTicket,
+  unlinkTicket,
+} from "../actions";
+import { MAX_ATTACHMENT_MB } from "@/lib/storage";
+import { getSlaStatus, resolveSlaPolicy } from "@/lib/sla";
+import { parseFieldSchema, parseCustomFieldValues } from "@/lib/asset-fields";
+import { CannedResponsePicker } from "./canned-response-picker";
+import { TimerControl } from "./timer-control";
+import { AutoRefresh } from "./auto-refresh";
+import { PriorityBadge, StatusBadge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardHeader } from "@/components/ui/card";
+import { MarkdownContent } from "@/components/ui/markdown-content";
+import { ActionForm, type FormActionState } from "@/components/ui/action-form";
+import { formatBytes } from "@/lib/format";
+
+const STATUS_OPTIONS: TicketStatus[] = [
+  "OPEN",
+  "IN_PROGRESS",
+  "WAITING_ON_REQUESTER",
+  "RESOLVED",
+  "CLOSED",
+];
+
+const PRIORITY_OPTIONS: TicketPriority[] = ["LOW", "MEDIUM", "HIGH", "EMERGENCY"];
+
+// Formats a Date as the local "YYYY-MM-DDTHH:mm" a <input type="datetime-local">
+// expects for defaultValue — toISOString() would shift it to UTC instead.
+function toDatetimeLocalValue(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+export default async function TicketDetailPage({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
+  const user = await requireAuth();
+
+  const { id } = await params;
+  const ticketId = Number(id);
+  if (!Number.isInteger(ticketId)) notFound();
+
+  const ticket = await prisma.ticket.findUnique({
+    where: { id: ticketId },
+    include: {
+      board: true,
+      location: true,
+      requester: true,
+      assignee: true,
+      category: true,
+      comments: {
+        orderBy: { createdAt: "asc" },
+        include: { author: true },
+      },
+      timeLogs: true,
+      csatResponse: true,
+      ticketAssets: { include: { asset: { include: { category: true } } }, orderBy: { createdAt: "asc" } },
+      scheduledVisits: { include: { technician: { select: { name: true } } }, orderBy: { startTime: "asc" } },
+      attachments: {
+        include: { uploadedByUser: { select: { name: true } } },
+        orderBy: { createdAt: "desc" },
+      },
+      kbArticleLinks: {
+        include: { kbArticle: { select: { id: true, title: true, isInternal: true } } },
+        orderBy: { createdAt: "asc" },
+      },
+      watchers: { include: { user: { select: { name: true } } }, orderBy: { createdAt: "asc" } },
+      linksFrom: {
+        include: { linkedTicket: { select: { id: true, title: true, status: true } } },
+        orderBy: { createdAt: "asc" },
+      },
+      linksTo: {
+        include: { ticket: { select: { id: true, title: true, status: true } } },
+        orderBy: { createdAt: "asc" },
+      },
+    },
+  });
+
+  if (!ticket) notFound();
+
+  const [slaPolicy, cannedResponses, locationAssets, candidateKbArticles, boardMembers, locationMembers, auditLogs] = await Promise.all([
+    resolveSlaPolicy(ticket.locationId, ticket.priority),
+    prisma.cannedResponse.findMany({
+      where: { OR: [{ boardId: null }, { boardId: ticket.boardId }] },
+      select: { id: true, title: true, body: true },
+    }),
+    prisma.asset.findMany({
+      where: { locationId: ticket.locationId, isActive: true },
+      include: { category: true },
+      orderBy: { name: "asc" },
+    }),
+    // Same scoping as canned responses: board-specific articles plus
+    // org-wide ones (boardId null).
+    prisma.kbArticle.findMany({
+      where: { OR: [{ boardId: null }, { boardId: ticket.boardId }] },
+      select: { id: true, title: true, isInternal: true },
+      orderBy: { title: "asc" },
+    }),
+    prisma.boardMember.findMany({ where: { boardId: ticket.boardId }, select: { userId: true } }),
+    prisma.locationMember.findMany({ where: { locationId: ticket.locationId }, select: { userId: true } }),
+    prisma.ticketAuditLog.findMany({
+      where: { ticketId },
+      include: { actor: { select: { name: true } } },
+      orderBy: { createdAt: "desc" },
+      take: 20,
+    }),
+  ]);
+
+  // Board-scoped and location-scoped assignee list: each dimension that has
+  // configured members narrows to (those members OR SUPER_ADMIN/
+  // DEPARTMENT_MANAGER, same role-bypass as requirePermission elsewhere); a
+  // dimension with zero configured members (e.g. an unconfigured board, or a
+  // location nobody's been scoped to) imposes no restriction of its own, so
+  // a ticket never becomes unassignable just because one dimension isn't set
+  // up yet. Both configured dimensions AND together.
+  const roleBypass: Prisma.UserWhereInput = { role: { in: ["SUPER_ADMIN", "DEPARTMENT_MANAGER"] } };
+  const assignabilityFilters: Prisma.UserWhereInput[] = [];
+  if (boardMembers.length > 0) {
+    assignabilityFilters.push({ OR: [{ id: { in: boardMembers.map((m) => m.userId) } }, roleBypass] });
+  }
+  if (locationMembers.length > 0) {
+    assignabilityFilters.push({ OR: [{ id: { in: locationMembers.map((m) => m.userId) } }, roleBypass] });
+  }
+  const assignableUsers = await prisma.user.findMany({
+    where: { isActive: true, AND: assignabilityFilters },
+    orderBy: { name: "asc" },
+  });
+
+  const linkedAssetIds = new Set(ticket.ticketAssets.map((ta) => ta.assetId));
+  const linkableAssets = locationAssets.filter((asset) => !linkedAssetIds.has(asset.id));
+  const linkedKbArticleIds = new Set(ticket.kbArticleLinks.map((link) => link.kbArticleId));
+  const linkableKbArticles = candidateKbArticles.filter((article) => !linkedKbArticleIds.has(article.id));
+  const isWatching = ticket.watchers.some((w) => w.userId === user.id);
+  const openTimer = ticket.timeLogs.find((log) => log.userId === user.id && log.endTime === null);
+
+  const customFieldSchema = parseFieldSchema(ticket.category?.fieldSchema);
+  const customFieldValues = parseCustomFieldValues(ticket.customFields);
+  const customFieldEntries = customFieldSchema
+    .map((field) => ({ label: field.label, value: customFieldValues[field.key] }))
+    .filter((entry) => entry.value);
+
+  const isOverdue = ticket.dueAt && ticket.status !== "RESOLVED" && ticket.status !== "CLOSED" && ticket.dueAt < new Date();
+
+  const sla =
+    slaPolicy && ticket.status !== "RESOLVED" && ticket.status !== "CLOSED"
+      ? getSlaStatus(ticket, slaPolicy)
+      : null;
+
+  async function changeStatus(formData: FormData) {
+    "use server";
+    const status = String(formData.get("status") ?? "");
+    await updateTicketStatus(ticketId, status);
+  }
+
+  async function changePriority(formData: FormData) {
+    "use server";
+    await updateTicketPriority(ticketId, formData);
+  }
+
+  async function changeAssignee(formData: FormData) {
+    "use server";
+    await assignTicket(ticketId, formData);
+  }
+
+  async function changeDueDate(formData: FormData) {
+    "use server";
+    await updateTicketDueDate(ticketId, formData);
+  }
+
+  async function submitComment(formData: FormData) {
+    "use server";
+    await addComment(ticketId, formData);
+  }
+
+  async function submitTimeLog(formData: FormData) {
+    "use server";
+    await logTime(ticketId, formData);
+  }
+
+  async function submitStartTimer() {
+    "use server";
+    await startTimer(ticketId);
+  }
+
+  async function submitStopTimer() {
+    "use server";
+    await stopTimer(ticketId);
+  }
+
+  async function submitLinkAsset(formData: FormData) {
+    "use server";
+    await linkAsset(ticketId, formData);
+  }
+
+  async function submitUploadAttachment(_prevState: FormActionState, formData: FormData): Promise<FormActionState> {
+    "use server";
+    return uploadAttachment(ticketId, formData);
+  }
+
+  async function submitLinkKbArticle(formData: FormData) {
+    "use server";
+    await linkKbArticle(ticketId, formData);
+  }
+
+  async function submitWatch() {
+    "use server";
+    await watchTicket(ticketId);
+  }
+
+  async function submitUnwatch() {
+    "use server";
+    await unwatchTicket(ticketId);
+  }
+
+  async function submitLinkTicket(formData: FormData) {
+    "use server";
+    await linkTicket(ticketId, formData);
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <AutoRefresh />
+      <Link href="/tickets" className="text-sm text-fg-subtle hover:text-fg">
+        ← Back to Tickets
+      </Link>
+
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-[20px] font-bold leading-tight tracking-tight text-fg">
+            TKT-{ticket.id} · {ticket.title}
+          </h1>
+          <div className="mt-[10px] flex flex-wrap items-center gap-[10px]">
+            <StatusBadge status={ticket.status} />
+            <PriorityBadge priority={ticket.priority} />
+            <span className="text-xs text-fg-subtle">Source: {ticket.source}</span>
+          </div>
+        </div>
+        <form action={isWatching ? submitUnwatch : submitWatch}>
+          <Button type="submit" variant="secondary" size="sm">
+            {isWatching ? "Unwatch" : "Watch"}
+          </Button>
+        </form>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_296px] lg:items-start">
+        {/* main column */}
+        <div className="flex flex-col gap-4">
+          <Card className="p-4">
+            <h2 className="text-[11px] font-semibold uppercase tracking-wider text-fg-subtle">
+              Description
+            </h2>
+            <MarkdownContent markdown={ticket.description} className="mt-2 text-[13.5px] text-fg" />
+          </Card>
+
+          <Card className="p-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-[11px] font-semibold uppercase tracking-wider text-fg-subtle">
+                Time logs
+              </h2>
+              <TimerControl
+                openTimerStart={openTimer ? openTimer.startTime.toISOString() : null}
+                onStart={submitStartTimer}
+                onStop={submitStopTimer}
+              />
+            </div>
+            {ticket.timeLogs.length === 0 ? (
+              <p className="mt-2 text-[13px] text-fg-subtle">No time logged yet.</p>
+            ) : (
+              <ul className="mt-2 divide-y divide-grid text-[13px]">
+                {ticket.timeLogs.map((log) => (
+                  <li key={log.id} className="flex items-center justify-between py-2">
+                    <span className="text-fg-muted">
+                      {log.endTime === null ? "Running…" : `${log.durationMinutes} min`} · {log.workType}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            <form action={submitTimeLog} className="mt-4 space-y-2 border-t border-border pt-3">
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-xs font-medium text-fg-muted">Duration (min)</label>
+                  <input
+                    type="number"
+                    name="durationMinutes"
+                    min={1}
+                    required
+                    className="mt-1 w-full rounded-md border border-border-strong bg-surface px-2 py-1.5 text-sm text-fg"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-fg-muted">Work type</label>
+                  <select
+                    name="workType"
+                    defaultValue="REMOTE"
+                    className="mt-1 w-full rounded-md border border-border-strong bg-surface px-2 py-1.5 text-sm text-fg"
+                  >
+                    <option value="REMOTE">Remote</option>
+                    <option value="ONSITE">Onsite</option>
+                    <option value="ADMIN">Admin</option>
+                    <option value="PROJECT">Project</option>
+                  </select>
+                </div>
+              </div>
+              <textarea
+                name="notesInternal"
+                rows={2}
+                placeholder="Internal notes…"
+                className="w-full rounded-md border border-border-strong bg-surface px-2 py-1.5 text-sm text-fg"
+              />
+              <div className="flex justify-end">
+                <Button type="submit" variant="primary" size="sm">
+                  Log time
+                </Button>
+              </div>
+            </form>
+          </Card>
+
+          <Card className="p-4">
+            <h2 className="text-[11px] font-semibold uppercase tracking-wider text-fg-subtle">
+              Comments
+            </h2>
+
+            <ul className="mt-3 flex flex-col gap-3">
+              {ticket.comments.map((comment) => {
+                const authorName = comment.author?.name ?? "Unknown";
+                return (
+                  <li
+                    key={comment.id}
+                    className={`rounded-xl border p-3.5 text-sm ${
+                      comment.isInternal ? "border-amber bg-amber-bg" : "border-border bg-surface"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="font-semibold text-fg">{authorName}</span>
+                      <div className="flex items-center gap-2">
+                        {comment.isInternal ? (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-amber-bg px-[7px] py-[1px] text-[10.5px] font-semibold text-amber">
+                            Internal note
+                          </span>
+                        ) : null}
+                        <span className="text-xs text-fg-subtle">{comment.createdAt.toLocaleString()}</span>
+                      </div>
+                    </div>
+                    <p className="mt-1 whitespace-pre-wrap text-fg-muted">{comment.body}</p>
+                  </li>
+                );
+              })}
+              {ticket.comments.length === 0 ? (
+                <p className="text-sm text-fg-subtle">No comments yet.</p>
+              ) : null}
+            </ul>
+
+            <form action={submitComment} className="mt-4 space-y-2 border-t border-border pt-4">
+              <CannedResponsePicker
+                cannedResponses={cannedResponses}
+                requesterName={ticket.requester.name}
+                ticketId={ticket.id}
+              />
+              <div className="flex items-center justify-between">
+                <label className="flex items-center gap-2 text-xs text-fg-muted">
+                  <input type="checkbox" name="isInternal" />
+                  Internal note (hidden from requester)
+                </label>
+                <Button type="submit" variant="primary">
+                  Add comment
+                </Button>
+              </div>
+            </form>
+          </Card>
+        </div>
+
+        {/* properties rail */}
+        <div className="flex flex-col gap-4">
+          {sla && (
+            <Card className="p-[18px]">
+              <div className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-fg-subtle">
+                SLA — {ticket.priority}
+              </div>
+              <div className="flex flex-col gap-3 text-[12.5px]">
+                <div>
+                  <div className="font-semibold text-fg-muted">Response due</div>
+                  <div className={sla.responseBreached ? "font-semibold text-red" : "text-fg"}>
+                    {sla.responseDueAt.toLocaleString()}
+                    {sla.responseBreached ? " — breached" : sla.firstResponseAt ? " — met" : ""}
+                  </div>
+                </div>
+                <div>
+                  <div className="font-semibold text-fg-muted">Resolution due</div>
+                  <div className={sla.resolutionBreached ? "font-semibold text-red" : "text-fg"}>
+                    {sla.resolutionDueAt.toLocaleString()}
+                    {sla.resolutionBreached ? " — breached" : ""}
+                  </div>
+                </div>
+              </div>
+            </Card>
+          )}
+
+          <Card className="p-[18px]">
+            <CardHeader className="-mx-[18px] -mt-[18px] mb-[14px] px-[18px] text-[11px] font-semibold uppercase tracking-wider text-fg-subtle">
+              Properties
+            </CardHeader>
+            <div className="flex flex-col gap-3 text-[12.5px]">
+              <div>
+                <div className="mb-1 font-medium text-fg-muted">Board</div>
+                <div className="font-medium text-fg">{ticket.board.name}</div>
+              </div>
+              <div>
+                <div className="mb-1 font-medium text-fg-muted">Category</div>
+                <div className="font-medium text-fg">{ticket.category?.name ?? "—"}</div>
+              </div>
+              {customFieldEntries.map((entry) => (
+                <div key={entry.label}>
+                  <div className="mb-1 font-medium text-fg-muted">{entry.label}</div>
+                  <div className="font-medium text-fg">{entry.value}</div>
+                </div>
+              ))}
+              <div>
+                <div className="mb-1 font-medium text-fg-muted">Submitted by</div>
+                <div className="font-medium text-fg">{ticket.requester.name}</div>
+              </div>
+              <div>
+                <div className="mb-1 font-medium text-fg-muted">Created</div>
+                <div className="font-medium text-fg">{ticket.createdAt.toLocaleString()}</div>
+              </div>
+              <div>
+                <div className="mb-1 font-medium text-fg-muted">Due</div>
+                <div className={isOverdue ? "font-semibold text-red" : "font-medium text-fg"}>
+                  {ticket.dueAt ? ticket.dueAt.toLocaleString() : "—"}
+                  {isOverdue ? " — overdue" : ""}
+                </div>
+              </div>
+              <div>
+                <div className="mb-1 font-medium text-fg-muted">Watching</div>
+                <div className="font-medium text-fg">
+                  {ticket.watchers.length > 0 ? ticket.watchers.map((w) => w.user.name).join(", ") : "—"}
+                </div>
+              </div>
+            </div>
+
+            <form action={changeStatus} className="mt-4 flex items-end gap-2 border-t border-border pt-4">
+              <div className="flex-1">
+                <label className="block text-xs font-medium text-fg-muted">Status</label>
+                <select
+                  name="status"
+                  defaultValue={ticket.status}
+                  className="mt-1 w-full rounded-md border border-border-strong bg-surface px-2 py-1.5 text-sm text-fg"
+                >
+                  {STATUS_OPTIONS.map((s) => (
+                    <option key={s} value={s}>
+                      {s.replace(/_/g, " ")}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <Button type="submit" variant="secondary" size="sm">
+                Update
+              </Button>
+            </form>
+
+            <form action={changePriority} className="mt-2 flex items-end gap-2">
+              <div className="flex-1">
+                <label className="block text-xs font-medium text-fg-muted">Priority</label>
+                <select
+                  name="priority"
+                  defaultValue={ticket.priority}
+                  className="mt-1 w-full rounded-md border border-border-strong bg-surface px-2 py-1.5 text-sm text-fg"
+                >
+                  {PRIORITY_OPTIONS.map((p) => (
+                    <option key={p} value={p}>
+                      {p}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <Button type="submit" variant="secondary" size="sm">
+                Update
+              </Button>
+            </form>
+
+            <form action={changeAssignee} className="mt-2 flex items-end gap-2">
+              <div className="flex-1">
+                <label className="block text-xs font-medium text-fg-muted">Assignee</label>
+                <select
+                  name="assigneeId"
+                  defaultValue={ticket.assigneeId ?? ""}
+                  className="mt-1 w-full rounded-md border border-border-strong bg-surface px-2 py-1.5 text-sm text-fg"
+                >
+                  <option value="">Unassigned</option>
+                  {assignableUsers.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <Button type="submit" variant="secondary" size="sm">
+                Update
+              </Button>
+            </form>
+
+            <form action={changeDueDate} className="mt-2 flex items-end gap-2">
+              <div className="flex-1">
+                <label className="block text-xs font-medium text-fg-muted">Due date</label>
+                <input
+                  type="datetime-local"
+                  name="dueAt"
+                  defaultValue={ticket.dueAt ? toDatetimeLocalValue(ticket.dueAt) : ""}
+                  className="mt-1 w-full rounded-md border border-border-strong bg-surface px-2 py-1.5 text-sm text-fg"
+                />
+              </div>
+              <Button type="submit" variant="secondary" size="sm">
+                Update
+              </Button>
+            </form>
+          </Card>
+
+          <Card className="p-[18px]">
+            <div className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-fg-subtle">
+              Assets
+            </div>
+            {ticket.ticketAssets.length === 0 ? (
+              <p className="text-[12.5px] text-fg-subtle">No assets linked yet.</p>
+            ) : (
+              <ul className="flex flex-col gap-2">
+                {ticket.ticketAssets.map((ta) => (
+                  <li key={ta.id} className="flex items-center justify-between gap-2 text-[12.5px]">
+                    <div className="min-w-0">
+                      <div className="truncate font-medium text-fg">{ta.asset.name}</div>
+                      <div className="text-[11px] text-fg-subtle">
+                        {ta.asset.category.name}
+                        {ta.asset.serialNumber ? ` · ${ta.asset.serialNumber}` : ""}
+                      </div>
+                    </div>
+                    <form action={unlinkAsset.bind(null, ticketId, ta.assetId)}>
+                      <Button type="submit" variant="ghost" size="sm">
+                        Unlink
+                      </Button>
+                    </form>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {linkableAssets.length > 0 && (
+              <form action={submitLinkAsset} className="mt-3 flex items-end gap-2 border-t border-border pt-3">
+                <select
+                  name="assetId"
+                  required
+                  className="min-w-0 flex-1 rounded-md border border-border-strong bg-surface px-2 py-1.5 text-sm text-fg"
+                >
+                  <option value="">Link an asset…</option>
+                  {linkableAssets.map((asset) => (
+                    <option key={asset.id} value={asset.id}>
+                      {asset.name} ({asset.category.name})
+                    </option>
+                  ))}
+                </select>
+                <Button type="submit" variant="secondary" size="sm">
+                  Link
+                </Button>
+              </form>
+            )}
+          </Card>
+
+          <Card className="p-[18px]">
+            <div className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-fg-subtle">
+              Linked articles
+            </div>
+            {ticket.kbArticleLinks.length === 0 ? (
+              <p className="text-[12.5px] text-fg-subtle">No articles linked yet.</p>
+            ) : (
+              <ul className="flex flex-col gap-2">
+                {ticket.kbArticleLinks.map((link) => (
+                  <li key={link.id} className="flex items-center justify-between gap-2 text-[12.5px]">
+                    <div className="min-w-0">
+                      <Link
+                        href={`/kb/${link.kbArticle.id}`}
+                        className="truncate font-medium text-accent hover:underline"
+                      >
+                        {link.kbArticle.title}
+                      </Link>
+                      {link.kbArticle.isInternal ? (
+                        <div className="text-[11px] text-fg-subtle">Internal only</div>
+                      ) : null}
+                    </div>
+                    <form action={unlinkKbArticle.bind(null, ticketId, link.kbArticleId)}>
+                      <Button type="submit" variant="ghost" size="sm">
+                        Unlink
+                      </Button>
+                    </form>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {linkableKbArticles.length > 0 && (
+              <form action={submitLinkKbArticle} className="mt-3 flex items-end gap-2 border-t border-border pt-3">
+                <select
+                  name="kbArticleId"
+                  required
+                  className="min-w-0 flex-1 rounded-md border border-border-strong bg-surface px-2 py-1.5 text-sm text-fg"
+                >
+                  <option value="">Link an article…</option>
+                  {linkableKbArticles.map((article) => (
+                    <option key={article.id} value={article.id}>
+                      {article.title}
+                      {article.isInternal ? " (internal)" : ""}
+                    </option>
+                  ))}
+                </select>
+                <Button type="submit" variant="secondary" size="sm">
+                  Link
+                </Button>
+              </form>
+            )}
+          </Card>
+
+          <Card className="p-[18px]">
+            <div className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-fg-subtle">
+              Attachments
+            </div>
+            {ticket.attachments.length === 0 ? (
+              <p className="text-[12.5px] text-fg-subtle">No files attached yet.</p>
+            ) : (
+              <ul className="flex flex-col gap-2">
+                {ticket.attachments.map((att) => {
+                  const uploaderName = att.uploadedByUser?.name ?? "Unknown";
+                  return (
+                    <li key={att.id} className="flex items-center justify-between gap-2 text-[12.5px]">
+                      <div className="min-w-0">
+                        <a
+                          href={`/api/attachments/${att.id}`}
+                          className="truncate font-medium text-accent hover:underline"
+                        >
+                          {att.fileName}
+                        </a>
+                        <div className="text-[11px] text-fg-subtle">
+                          {formatBytes(att.sizeBytes)} · {uploaderName}
+                          {att.isInternal ? " · internal only" : ""}
+                        </div>
+                      </div>
+                      <form action={deleteAttachment.bind(null, ticketId, att.id)}>
+                        <Button type="submit" variant="ghost" size="sm">
+                          Delete
+                        </Button>
+                      </form>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+            <ActionForm
+              action={submitUploadAttachment}
+              encType="multipart/form-data"
+              className="mt-3 flex flex-col gap-2 border-t border-border pt-3"
+            >
+              <input
+                type="file"
+                name="file"
+                required
+                className="text-[12.5px] text-fg-muted"
+              />
+              <div className="flex items-center justify-between">
+                <label className="flex items-center gap-2 text-xs text-fg-muted">
+                  <input type="checkbox" name="isInternal" />
+                  Internal only (hidden from requester)
+                </label>
+                <Button type="submit" variant="secondary" size="sm">
+                  Upload
+                </Button>
+              </div>
+              <p className="text-[10.5px] text-fg-subtle">Max {MAX_ATTACHMENT_MB}MB.</p>
+            </ActionForm>
+          </Card>
+
+          <Card className="p-[18px]">
+            <div className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-fg-subtle">
+              Linked tickets
+            </div>
+            {ticket.linksFrom.length === 0 && ticket.linksTo.length === 0 ? (
+              <p className="text-[12.5px] text-fg-subtle">No linked tickets.</p>
+            ) : (
+              <ul className="flex flex-col gap-2">
+                {ticket.linksFrom.map((link) => (
+                  <li key={link.id} className="flex items-center justify-between gap-2 text-[12.5px]">
+                    <div className="min-w-0">
+                      <Link
+                        href={`/tickets/${link.linkedTicket.id}`}
+                        className="truncate font-medium text-accent hover:underline"
+                      >
+                        TKT-{link.linkedTicket.id} · {link.linkedTicket.title}
+                      </Link>
+                      <div className="text-[11px] text-fg-subtle">
+                        {link.type} · {link.linkedTicket.status.replace(/_/g, " ")}
+                      </div>
+                    </div>
+                    <form action={unlinkTicket.bind(null, ticketId, link.id)}>
+                      <Button type="submit" variant="ghost" size="sm">
+                        Unlink
+                      </Button>
+                    </form>
+                  </li>
+                ))}
+                {ticket.linksTo.map((link) => (
+                  <li key={link.id} className="flex items-center justify-between gap-2 text-[12.5px]">
+                    <div className="min-w-0">
+                      <Link
+                        href={`/tickets/${link.ticket.id}`}
+                        className="truncate font-medium text-accent hover:underline"
+                      >
+                        TKT-{link.ticket.id} · {link.ticket.title}
+                      </Link>
+                      <div className="text-[11px] text-fg-subtle">
+                        {link.type} · {link.ticket.status.replace(/_/g, " ")}
+                      </div>
+                    </div>
+                    <form action={unlinkTicket.bind(null, ticketId, link.id)}>
+                      <Button type="submit" variant="ghost" size="sm">
+                        Unlink
+                      </Button>
+                    </form>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            <form action={submitLinkTicket} className="mt-3 flex items-end gap-2 border-t border-border pt-3">
+              <div className="flex-1">
+                <label className="block text-xs font-medium text-fg-muted">Ticket #</label>
+                <input
+                  type="number"
+                  name="linkedTicketId"
+                  min={1}
+                  required
+                  className="mt-1 w-full rounded-md border border-border-strong bg-surface px-2 py-1.5 text-sm text-fg"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-fg-muted">Type</label>
+                <select
+                  name="type"
+                  defaultValue="RELATED"
+                  className="mt-1 w-full rounded-md border border-border-strong bg-surface px-2 py-1.5 text-sm text-fg"
+                >
+                  <option value="RELATED">Related</option>
+                  <option value="DUPLICATE">Duplicate</option>
+                </select>
+              </div>
+              <Button type="submit" variant="secondary" size="sm">
+                Link
+              </Button>
+            </form>
+          </Card>
+
+          <Card className="p-[18px]">
+            <div className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-fg-subtle">
+              History
+            </div>
+            {auditLogs.length === 0 ? (
+              <p className="text-[12.5px] text-fg-subtle">No changes recorded yet.</p>
+            ) : (
+              <ul className="flex flex-col gap-2.5 text-[12.5px]">
+                {auditLogs.map((log) => (
+                  <li key={log.id}>
+                    <div className="text-fg-muted">
+                      <span className="font-medium text-fg">{log.field}</span> changed from{" "}
+                      <span className="font-medium text-fg">{log.oldValue ?? "—"}</span> to{" "}
+                      <span className="font-medium text-fg">{log.newValue ?? "—"}</span>
+                    </div>
+                    <div className="text-[11px] text-fg-subtle">
+                      {log.actor?.name ?? "System"} · {log.createdAt.toLocaleString()}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Card>
+
+          <Card className="p-[18px]">
+            <div className="mb-3 flex items-center justify-between">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-fg-subtle">
+                Scheduled visits
+              </div>
+              <a href={`/schedule/new?ticketId=${ticket.id}`} className="text-[11.5px] font-medium text-accent hover:underline">
+                + Schedule
+              </a>
+            </div>
+            {ticket.scheduledVisits.length === 0 ? (
+              <p className="text-[12.5px] text-fg-subtle">No visits scheduled.</p>
+            ) : (
+              <ul className="flex flex-col gap-2">
+                {ticket.scheduledVisits.map((visit) => (
+                  <li key={visit.id} className="text-[12.5px]">
+                    <div className="font-medium text-fg">
+                      {visit.startTime.toLocaleString(undefined, {
+                        month: "short",
+                        day: "numeric",
+                        hour: "numeric",
+                        minute: "2-digit",
+                      })}
+                    </div>
+                    <div className="text-[11px] text-fg-subtle">
+                      {visit.technician.name}
+                      {visit.location ? ` · ${visit.location}` : ""}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Card>
+
+          {ticket.csatResponse && (
+            <Card className="p-[18px]">
+              <div className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-fg-subtle">
+                Employee satisfaction
+              </div>
+              {ticket.csatResponse.respondedAt ? (
+                <div className="flex flex-col gap-1.5">
+                  <div className="text-[20px] font-bold text-fg">{ticket.csatResponse.rating}/5</div>
+                  {ticket.csatResponse.comment && (
+                    <p className="text-[12.5px] text-fg-muted">&quot;{ticket.csatResponse.comment}&quot;</p>
+                  )}
+                </div>
+              ) : (
+                <p className="text-[12.5px] text-fg-subtle">
+                  {ticket.csatResponse.sentAt
+                    ? "Survey sent, awaiting response."
+                    : "Survey could not be sent — see internal comments for why."}
+                </p>
+              )}
+            </Card>
+          )}
+
+          <Card className="p-[18px]">
+            <div className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-fg-subtle">
+              Location
+            </div>
+            <div className="text-[13px] font-semibold text-fg">{ticket.location.name}</div>
+          </Card>
+        </div>
+      </div>
+    </div>
+  );
+}

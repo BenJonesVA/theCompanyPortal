@@ -1,0 +1,21 @@
+# Auto-loaded by `docker compose up` whenever no explicit -f flags are
+# passed — restores the local-dev conveniences (host port access to
+# Postgres/the app, Adminer) that docker-compose.yml deliberately no longer
+# publishes by default. A prod deploy always passes explicit -f flags (see
+# plan.md / README's VM deployment steps), which skips this file entirely.
+services:
+  postgres:
+    ports:
+      - "5433:5432"
+
+  app:
+    ports:
+      - "3232:3131"
+
+  adminer:
+    image: adminer:latest
+    restart: unless-stopped
+    ports:
+      - "8081:8080"
+    depends_on:
+      - postgres

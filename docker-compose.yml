@@ -1,0 +1,60 @@
+services:
+  # No host ports published here by default — this file alone is what a
+  # production host runs. Local dev gets 5432/3131/adminer back via
+  # docker-compose.override.yml, which `docker compose up` auto-loads
+  # whenever you *don't* pass explicit -f flags (see README). A prod deploy
+  # always passes explicit -f flags (see plan.md's Deployment section),
+  # which skips that auto-load — so the override file being present in the
+  # repo never leaks dev-only exposure onto a VM.
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-tb}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tb}
+      POSTGRES_DB: ${POSTGRES_DB:-tb}
+    volumes:
+      - tb_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tb}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Runs once, applies any pending migrations, then exits. Reuses the
+  # `builder` stage (which still has the full Prisma CLI + migrations
+  # folder) so the `app` image itself can stay lean and not carry Prisma's
+  # CLI/migration-engine binaries. `app` waits for this to succeed before
+  # starting — fine for a single-instance setup like this one; a multi
+  # -replica deployment would want migrations run as a separate release
+  # step instead, to avoid every replica racing to migrate at once.
+  migrate:
+    build:
+      context: .
+      target: builder
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-tb}:${POSTGRES_PASSWORD:-tb}@postgres:5432/${POSTGRES_DB:-tb}?schema=public
+    command: ["npx", "prisma", "migrate", "deploy"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  app:
+    build:
+      context: .
+      target: runner
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-tb}:${POSTGRES_PASSWORD:-tb}@postgres:5432/${POSTGRES_DB:-tb}?schema=public
+    volumes:
+      - tb_uploads_data:/app/uploads
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  tb_postgres_data:
+  tb_uploads_data:

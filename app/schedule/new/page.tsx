@@ -1,0 +1,122 @@
+import { prisma } from "@/lib/prisma";
+import { requireAuth } from "@/lib/rbac";
+import { createVisit } from "../actions";
+import { ActionForm } from "@/components/ui/action-form";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+
+const OPEN_STATUSES = ["OPEN", "IN_PROGRESS", "WAITING_ON_REQUESTER"] as const;
+
+export default async function NewScheduledVisitPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ ticketId?: string }>;
+}) {
+  await requireAuth();
+  const { ticketId } = await searchParams;
+  const preselectedId = ticketId && Number.isInteger(Number(ticketId)) ? Number(ticketId) : null;
+
+  const [tickets, technicians] = await Promise.all([
+    prisma.ticket.findMany({
+      // Always include the ticket linked in from the ticket-detail page's
+      // "+ Schedule" button, even if it's RESOLVED/CLOSED — otherwise it's
+      // silently absent from the list and defaultValue has nothing to select.
+      where: {
+        OR: [{ status: { in: [...OPEN_STATUSES] } }, ...(preselectedId ? [{ id: preselectedId }] : [])],
+      },
+      include: { location: { select: { name: true } } },
+      orderBy: { createdAt: "desc" },
+    }),
+    prisma.user.findMany({ where: { isActive: true }, orderBy: { name: "asc" } }),
+  ]);
+
+  return (
+    <div className="mx-auto max-w-xl">
+      <h1 className="text-[24px] font-bold tracking-tight text-fg">Schedule a visit</h1>
+
+      <Card className="mt-6 p-6">
+        <ActionForm action={createVisit} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-fg-muted">Ticket</label>
+            <select
+              name="ticketId"
+              required
+              defaultValue={ticketId ?? ""}
+              className="mt-1 w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-sm text-fg"
+            >
+              <option value="">Select a ticket</option>
+              {tickets.map((ticket) => (
+                <option key={ticket.id} value={ticket.id}>
+                  TKT-{ticket.id} · {ticket.location.name} · {ticket.title}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-fg-muted">Technician</label>
+            <select
+              name="technicianId"
+              required
+              className="mt-1 w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-sm text-fg"
+            >
+              <option value="">Select a technician</option>
+              {technicians.map((tech) => (
+                <option key={tech.id} value={tech.id}>
+                  {tech.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-fg-muted">Start</label>
+              <input
+                type="datetime-local"
+                name="startTime"
+                required
+                className="mt-1 w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-sm text-fg"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-fg-muted">End</label>
+              <input
+                type="datetime-local"
+                name="endTime"
+                required
+                className="mt-1 w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-sm text-fg"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-fg-muted">Location</label>
+            <input
+              type="text"
+              name="location"
+              placeholder="Optional — e.g. site address"
+              className="mt-1 w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-sm text-fg"
+            />
+          </div>
+
+          <label className="flex items-center gap-2 text-sm text-fg-muted">
+            <input type="checkbox" name="force" className="rounded border-border-strong accent-accent" />
+            Create anyway (double-book technician if there&apos;s a conflicting visit)
+          </label>
+
+          <div className="flex justify-end gap-3">
+            <a href="/schedule">
+              <Button type="button" variant="secondary">
+                Cancel
+              </Button>
+            </a>
+            <Button type="submit" variant="primary">
+              Schedule visit
+            </Button>
+          </div>
+        </ActionForm>
+      </Card>
+    </div>
+  );
+}

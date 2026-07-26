@@ -1,0 +1,1090 @@
+// ─────────────────────────────────────────────────────────────
+// Enterprise Employee & Operational Portal — Phase 1 Schema
+// Forked from psa (D:\Projects\psa). Core Ticketing (Boards, Tickets),
+// Org Hierarchy (Users, Departments, Locations), Location Personalization,
+// and the Multi-Stage Approval Workflow Engine.
+//
+// See ../ARCHITECTURE.md for how the Approval State Machine and the
+// Location-Aware Personalization Engine work at the database level, and
+// ../plan.md for the full rationale behind what was kept/renamed/dropped
+// from psa.
+// ─────────────────────────────────────────────────────────────
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ── Enums ──────────────────────────────────────────────────
+
+enum Role {
+  SUPER_ADMIN
+  LOCATION_ADMIN
+  DEPARTMENT_MANAGER
+  EMPLOYEE
+}
+
+enum LocationType {
+  CORPORATE_HQ
+  REGIONAL_HUB
+  BRANCH
+}
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  WAITING_ON_REQUESTER
+  RESOLVED
+  CLOSED
+}
+
+enum TicketPriority {
+  LOW
+  MEDIUM
+  HIGH
+  EMERGENCY
+}
+
+enum TicketSource {
+  EMAIL
+  PORTAL
+  MANUAL
+  PHONE
+}
+
+enum TicketLinkType {
+  RELATED
+  DUPLICATE
+}
+
+enum NotificationType {
+  TICKET_ASSIGNED
+  TICKET_UPDATED
+  SLA_BREACH
+  AUTOMATION_ALERT
+  APPROVAL_REQUESTED
+  APPROVAL_DECISION_NEEDED
+  APPROVAL_APPROVED
+  APPROVAL_REJECTED
+  APPROVAL_ESCALATED
+}
+
+enum WorkType {
+  REMOTE
+  ONSITE
+  ADMIN
+  PROJECT
+}
+
+enum AutomationTrigger {
+  TICKET_CREATED
+  STATUS_CHANGED
+  PRIORITY_ESCALATED
+  IDLE_TIME_EXCEEDED
+}
+
+enum AutomationAction {
+  ASSIGN_TECHNICIAN
+  SEND_EMAIL_NOTIFICATION
+  CHANGE_STATUS
+  CHANGE_PRIORITY
+}
+
+// One entry per real admin-only/manager-only gate in the app (lib/rbac.ts's
+// requireRole call sites) — additive on top of the role enum, never a
+// replacement: a permission grants a capability a user's role wouldn't
+// otherwise have (e.g. letting an EMPLOYEE manage boards), it never takes
+// one away from SUPER_ADMIN/DEPARTMENT_MANAGER. See lib/permissions.ts for
+// the catalog with human labels, and lib/rbac.ts's requirePermission() for
+// the check itself. Ported as-is from psa — this layer was never MSP-specific.
+enum Permission {
+  MANAGE_BOARDS
+  MANAGE_LOCATIONS
+  MANAGE_DEPARTMENTS
+  MANAGE_ASSETS
+  MANAGE_CATEGORIES
+  MANAGE_AUTOMATION
+  MANAGE_SLA
+  MANAGE_CANNED_RESPONSES
+  MANAGE_TICKET_TEMPLATES
+  MANAGE_BRANDING
+  MANAGE_USERS
+  MANAGE_LOCATION_PAGES
+  MANAGE_APPROVAL_WORKFLOWS
+  VIEW_REPORTS
+}
+
+// Admin-managed, named bundles of Permission grants. A user in zero groups
+// behaves exactly as before this feature existed — this is purely additive.
+model PermissionGroup {
+  id          String       @id @default(cuid())
+  name        String       @unique
+  permissions Permission[] @default([])
+  createdAt   DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime     @updatedAt @db.Timestamptz(3)
+
+  members        UserPermissionGroup[]
+  stageTemplates ApprovalStageTemplate[]
+}
+
+model UserPermissionGroup {
+  id      String          @id @default(cuid())
+  userId  String
+  groupId String
+  user    User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  group   PermissionGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, groupId])
+  @@index([groupId])
+}
+
+// ── Users & Org Hierarchy ──────────────────────────────────
+
+// Every person in the company — psa's staff User / portal Contact split
+// collapses into this single model since there's no external tenant here.
+// managerId is new: it's what lets Approval stages resolve "requester's
+// manager" / "manager's manager" dynamically (see ApprovalStageTemplate).
+model User {
+  id           String  @id @default(cuid())
+  email        String  @unique
+  name         String
+  title        String?
+  role         Role    @default(EMPLOYEE)
+  passwordHash String?
+  isActive     Boolean @default(true)
+
+  managerId String?
+  manager   User?   @relation("ManagerReports", fields: [managerId], references: [id], onDelete: SetNull)
+  reports   User[]  @relation("ManagerReports")
+
+  // Primary/home location — drives dashboard personalization (see
+  // ARCHITECTURE.md) and default board/location scoping.
+  locationId String?
+  location   Location? @relation(fields: [locationId], references: [id], onDelete: SetNull)
+
+  departmentId String?
+  department   Department? @relation("DepartmentEmployees", fields: [departmentId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  boardMemberships        BoardMember[]
+  locationMemberships     LocationMember[]
+  assignedTickets         Ticket[]                @relation("TicketAssignee")
+  submittedTickets        Ticket[]                @relation("TicketRequester")
+  comments                TicketComment[]
+  timeLogs                TimeLog[]
+  cannedResponses         CannedResponse[]
+  ticketTemplates         TicketTemplate[]
+  kbArticles              KbArticle[]
+  scheduledVisits         ScheduledVisit[]        @relation("ScheduledVisitTechnician")
+  automationAssignments   AutomationRule[]        @relation("AutomationActionAssignee")
+  uploadedAttachments     Attachment[]
+  permissionGroups        UserPermissionGroup[]
+  ticketAuditLogs         TicketAuditLog[]        @relation("TicketAuditLogActor")
+  savedTicketFilters      SavedTicketFilter[]
+  ticketWatches           TicketWatcher[]
+  notifications           Notification[]
+  managedDepartments      Department[]            @relation("DepartmentManager")
+  approvalRequests        ApprovalRequest[]       @relation("ApprovalRequester")
+  stageApprovals          StageApprover[]
+  approvalAuditLogs       ApprovalAuditLog[]      @relation("ApprovalAuditLogActor")
+  delegationsGiven        ApprovalDelegate[]      @relation("ApprovalDelegator")
+  delegationsReceived     ApprovalDelegate[]      @relation("ApprovalDelegate")
+  locationPageConfigEdits LocationPageConfig[]    @relation("LocationPageConfigEditor")
+  approvalStageTemplates  ApprovalStageTemplate[]
+
+  @@index([role])
+  @@index([locationId])
+  @@index([departmentId])
+  @@index([managerId])
+}
+
+// Org unit (Engineering, Sales, HR, Finance, ...) — distinct from Board,
+// which is the ticket *queue* an employee files into (IT Helpdesk, Facilities,
+// etc). A Department has a manager who receives approval requests routed to
+// "department manager" and views ticket reports for Boards it owns. See
+// ARCHITECTURE.md / plan.md for why these are two separate models instead of
+// one.
+model Department {
+  id          String  @id @default(cuid())
+  name        String  @unique
+  description String?
+  isActive    Boolean @default(true)
+
+  managerId String?
+  manager   User?   @relation("DepartmentManager", fields: [managerId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  employees User[]  @relation("DepartmentEmployees")
+  boards    Board[]
+
+  @@index([managerId])
+}
+
+// ── Locations (renamed from psa's Client) ─────────────────
+
+// Corporate HQ -> Regional Hub -> Branch/Office, via the same self-
+// referential parentId pattern psa used for Client (MSP parent/child
+// companies). `type` makes the tier explicit instead of inferring it from
+// depth in the tree.
+model Location {
+  id       String       @id @default(cuid())
+  name     String
+  type     LocationType @default(BRANCH)
+  parentId String?
+  parent   Location?    @relation("LocationHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
+  children Location[]   @relation("LocationHierarchy")
+
+  address   String?
+  timezone  String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  employees            User[]
+  members              LocationMember[]
+  tickets              Ticket[]
+  assets               Asset[]
+  automationConditions AutomationRule[]    @relation("AutomationConditionLocation")
+  slaPolicies          LocationSlaPolicy[]
+  pageConfig           LocationPageConfig?
+
+  @@index([parentId])
+  @@index([type])
+}
+
+// Same RBAC-scoping shape as BoardMember, one dimension over: which staff
+// can see/work a given location's tickets (e.g. Facilities/HR queues scoped
+// to the people who actually support that office). Ported directly from
+// psa's ClientMember.
+model LocationMember {
+  id         String   @id @default(cuid())
+  locationId String
+  userId     String
+  location   Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([locationId, userId])
+  @@index([userId])
+}
+
+// Presentation-only customization of a location's landing page (custom
+// banner, local widgets, floor plan link). Deliberately does NOT hold
+// announcements/emergency-alert content — that's the News/CMS module
+// (Phase 4), not this table, to avoid double-modeling content. See
+// ARCHITECTURE.md for how this resolves up the Location parent chain when a
+// branch has no config of its own.
+model LocationPageConfig {
+  id         String   @id @default(cuid())
+  locationId String   @unique
+  location   Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+  bannerImageUrl String?
+  bannerText     String?
+  floorPlanUrl   String?
+
+  // Widget toggles/config: e.g. { "weather": {"enabled": true, "city": "..."},
+  // "transit": {...}, "localLinks": [...] } — same schema-flexibility
+  // rationale as Category.fieldSchema elsewhere in this file.
+  widgetConfig Json?
+
+  updatedByUserId String?
+  updatedByUser   User?    @relation("LocationPageConfigEditor", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+  updatedAt       DateTime @updatedAt @db.Timestamptz(3)
+}
+
+// ── Boards & Board Membership (RBAC scoping) ──────────────
+
+// The Departmental Service Board / queue concept (IT Helpdesk, Facilities &
+// Maintenance, HR Requests, Finance/Procurement, Operations). Ported as-is
+// from psa. departmentId is new — an optional link to the owning org
+// Department so "department ticket reports" (spec section F) has an
+// unambiguous query path.
+model Board {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(3)
+
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+
+  tickets              Ticket[]
+  members              BoardMember[]
+  cannedResponses      CannedResponse[]
+  ticketTemplates      TicketTemplate[]
+  kbArticles           KbArticle[]
+  automationConditions AutomationRule[] @relation("AutomationConditionBoard")
+
+  @@index([departmentId])
+}
+
+model BoardMember {
+  id      String @id @default(cuid())
+  boardId String
+  userId  String
+  board   Board  @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([boardId, userId])
+  @@index([userId])
+}
+
+// ── Ticket Taxonomy ────────────────────────────────────────
+
+model Category {
+  id       String     @id @default(cuid())
+  name     String
+  parentId String?
+  parent   Category?  @relation("CategoryHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
+  children Category[] @relation("CategoryHierarchy")
+
+  // Array of AssetFieldDef (lib/asset-fields.ts, reused as-is for tickets):
+  // admin-defined custom fields that tickets in this category present on
+  // their create form.
+  fieldSchema Json?
+
+  tickets         Ticket[]
+  kbArticles      KbArticle[]
+  ticketTemplates TicketTemplate[]
+
+  @@index([parentId])
+}
+
+model KbArticle {
+  id         String  @id @default(cuid())
+  title      String
+  body       String  @db.Text
+  isInternal Boolean @default(false) // hidden from ordinary employees — staff/admin only
+
+  boardId    String?
+  board      Board?    @relation(fields: [boardId], references: [id], onDelete: SetNull)
+  categoryId String?
+  category   Category? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+
+  createdById String
+  createdBy   User   @relation(fields: [createdById], references: [id])
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  ticketLinks TicketKbArticle[]
+
+  @@index([boardId])
+  @@index([categoryId])
+  @@index([isInternal])
+}
+
+model CannedResponse {
+  id          String   @id @default(cuid())
+  title       String
+  body        String   @db.Text
+  boardId     String?
+  board       Board?   @relation(fields: [boardId], references: [id], onDelete: SetNull)
+  createdById String
+  createdBy   User     @relation(fields: [createdById], references: [id])
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([boardId])
+  @@index([createdById])
+}
+
+// Prefilled ticket-creation content — distinct from CannedResponse, which is
+// reply text inserted into the comment box, not the ticket itself.
+model TicketTemplate {
+  id                  String         @id @default(cuid())
+  name                String
+  boardId             String?
+  board               Board?         @relation(fields: [boardId], references: [id], onDelete: SetNull)
+  titleTemplate       String
+  descriptionTemplate String         @db.Text
+  priority            TicketPriority @default(MEDIUM)
+  categoryId          String?
+  category            Category?      @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  createdById         String
+  createdBy           User           @relation(fields: [createdById], references: [id])
+  createdAt           DateTime       @default(now()) @db.Timestamptz(3)
+  updatedAt           DateTime       @updatedAt @db.Timestamptz(3)
+
+  @@index([boardId])
+  @@index([categoryId])
+}
+
+// ── Tickets ────────────────────────────────────────────────
+
+model Ticket {
+  id          Int            @id @default(autoincrement()) // display as e.g. TKT-{id}
+  title       String
+  description String         @db.Text
+  status      TicketStatus   @default(OPEN)
+  priority    TicketPriority @default(MEDIUM)
+  source      TicketSource   @default(MANUAL)
+
+  boardId String
+  board   Board  @relation(fields: [boardId], references: [id])
+
+  // The office/branch this request is tied to — usually the requester's home
+  // Location, but kept as its own FK since a request can be filed on behalf
+  // of a different location (e.g. IT filing a facilities ticket for a branch
+  // it doesn't work out of).
+  locationId String
+  location   Location @relation(fields: [locationId], references: [id])
+
+  requesterId String
+  requester   User   @relation("TicketRequester", fields: [requesterId], references: [id])
+
+  assigneeId String?
+  assignee   User?   @relation("TicketAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+
+  categoryId String?
+  category   Category? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+
+  // Values keyed by AssetFieldDef.key from category.fieldSchema at the time
+  // each value was saved (lib/asset-fields.ts) — same pattern as
+  // Asset.customFields.
+  customFields Json?
+  // Manually-set follow-up date, distinct from the SLA response/resolution
+  // targets computed in lib/sla.ts.
+  dueAt        DateTime? @db.Timestamptz(3)
+
+  createdAt  DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt  DateTime  @updatedAt @db.Timestamptz(3)
+  resolvedAt DateTime? @db.Timestamptz(3)
+  closedAt   DateTime? @db.Timestamptz(3)
+
+  // SLA resolution-clock pause tracking: waitingSince is set when the ticket
+  // enters WAITING_ON_REQUESTER and cleared when it leaves; totalWaitMinutes
+  // accumulates the elapsed time on each exit. getSlaStatus (lib/sla.ts) adds
+  // both back onto resolutionDueAt so time spent waiting on the requester
+  // doesn't count against internal SLA targets.
+  waitingSince     DateTime? @db.Timestamptz(3)
+  totalWaitMinutes Int       @default(0)
+
+  comments        TicketComment[]
+  timeLogs        TimeLog[]
+  csatResponse    CsatResponse?
+  ticketAssets    TicketAsset[]
+  scheduledVisits ScheduledVisit[]
+  attachments     Attachment[]
+  kbArticleLinks  TicketKbArticle[]
+  auditLogs       TicketAuditLog[]
+  watchers        TicketWatcher[]
+  linksFrom       TicketLink[]      @relation("TicketLinkFrom")
+  linksTo         TicketLink[]      @relation("TicketLinkTo")
+  notifications   Notification[]
+
+  @@index([boardId, status])
+  @@index([locationId])
+  @@index([requesterId])
+  @@index([assigneeId])
+  @@index([categoryId])
+  @@index([status, priority])
+}
+
+model TicketComment {
+  id       String @id @default(cuid())
+  ticketId Int
+  ticket   Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  authorId String?
+  author   User?   @relation(fields: [authorId], references: [id], onDelete: SetNull)
+
+  body       String   @db.Text
+  isInternal Boolean  @default(false) // internal notes are hidden from the requester, visible to staff/admin
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([ticketId])
+}
+
+// Files live on local disk (lib/storage.ts), keyed by this row's own id — the
+// caller-supplied fileName is never used as the on-disk path, only for
+// display and the download Content-Disposition header.
+model Attachment {
+  id       String @id @default(cuid())
+  ticketId Int
+  ticket   Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  fileName  String
+  mimeType  String
+  sizeBytes Int
+
+  isInternal Boolean @default(false) // same semantics as TicketComment.isInternal
+
+  uploadedByUserId String?
+  uploadedByUser   User?   @relation(fields: [uploadedByUserId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([ticketId])
+}
+
+// ── Time-Keeping ───────────────────────────────────────────
+
+// Kept from psa, stripped of billing fields (billable/contractId/isLocked/
+// invoiceLineItems) — still useful for tracking effort per ticket without
+// any invoicing behind it.
+model TimeLog {
+  id       String @id @default(cuid())
+  ticketId Int
+  ticket   Ticket @relation(fields: [ticketId], references: [id])
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  startTime       DateTime  @db.Timestamptz(3)
+  endTime         DateTime? @db.Timestamptz(3)
+  durationMinutes Int
+  workType        WorkType  @default(REMOTE)
+  notesInternal   String?   @db.Text
+  notesExternal   String?   @db.Text
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([ticketId])
+  @@index([userId])
+}
+
+// ── Assets / mini-CMDB ─────────────────────────────────────
+
+// Admin-manageable, hierarchical — same self-referential pattern as
+// Category.
+model AssetCategory {
+  id       String          @id @default(cuid())
+  name     String
+  parentId String?
+  parent   AssetCategory?  @relation("AssetCategoryHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
+  children AssetCategory[] @relation("AssetCategoryHierarchy")
+
+  // Array of AssetFieldDef (lib/asset-fields.ts): admin-defined custom fields
+  // that assets in this category present on their create/edit forms.
+  fieldSchema Json?
+
+  assets Asset[]
+
+  @@index([parentId])
+}
+
+// Internal equipment inventory, scoped to the owning Location rather than an
+// MSP client.
+model Asset {
+  id         String   @id @default(cuid())
+  locationId String
+  location   Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+  categoryId String
+  category   AssetCategory @relation(fields: [categoryId], references: [id])
+
+  name         String
+  serialNumber String?
+  notes        String? @db.Text
+  isActive     Boolean @default(true)
+
+  // Values keyed by AssetFieldDef.key from this asset's category.fieldSchema
+  // at the time each value was saved (lib/asset-fields.ts). Not re-validated
+  // against the category's current schema until the next edit.
+  customFields Json?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  ticketAssets TicketAsset[]
+
+  @@index([locationId])
+  @@index([categoryId])
+}
+
+// Join table for per-ticket asset association — a ticket can reference
+// several assets (e.g. "laptop + the dock it's plugged into"), and an
+// asset can show up across many tickets over its lifetime.
+model TicketAsset {
+  id       String @id @default(cuid())
+  ticketId Int
+  ticket   Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  assetId  String
+  asset    Asset  @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  @@unique([ticketId, assetId])
+  @@index([assetId])
+}
+
+// ── Dispatch / Scheduling ──────────────────────────────────
+
+// A booked site visit or remote appointment for a technician against a
+// ticket. No isCancelled flag — a schedule slot is inherently transient
+// (constantly rebooked/moved), so a cancel is just a delete.
+model ScheduledVisit {
+  id           String @id @default(cuid())
+  ticketId     Int
+  ticket       Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  technicianId String
+  technician   User   @relation("ScheduledVisitTechnician", fields: [technicianId], references: [id], onDelete: Cascade)
+
+  startTime DateTime @db.Timestamptz(3)
+  endTime   DateTime @db.Timestamptz(3)
+  location  String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([technicianId, startTime])
+  @@index([ticketId])
+}
+
+// ── SLA Engine ─────────────────────────────────────────────
+
+// One policy per priority level: response/resolution targets in minutes.
+model SlaPolicy {
+  id                      String         @id @default(cuid())
+  priority                TicketPriority @unique
+  responseTargetMinutes   Int
+  resolutionTargetMinutes Int
+  isActive                Boolean        @default(true)
+  createdAt               DateTime       @default(now()) @db.Timestamptz(3)
+  updatedAt               DateTime       @updatedAt @db.Timestamptz(3)
+}
+
+// Per-location SLA override — same shape as SlaPolicy (one row per priority)
+// but scoped to a location. getSlaStatus (lib/sla.ts) checks for a matching
+// active row here before falling back to the global SlaPolicy row — same
+// resolver shape reused for location personalization in
+// LocationPageConfig's fallback chain (see ARCHITECTURE.md).
+model LocationSlaPolicy {
+  id                      String         @id @default(cuid())
+  locationId              String
+  location                Location       @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  priority                TicketPriority
+  responseTargetMinutes   Int
+  resolutionTargetMinutes Int
+  isActive                Boolean        @default(true)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@unique([locationId, priority])
+}
+
+// ── CSAT Survey ────────────────────────────────────────────
+
+// One row per ticket, created the moment a ticket closes. `id` doubles as the
+// unguessable public survey link token (/csat/{id}) — the same "unguessable
+// id is the auth" pattern reused for StageApprover.magicLinkToken below.
+model CsatResponse {
+  id       String @id @default(cuid())
+  ticketId Int    @unique
+  ticket   Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  rating  Int?
+  comment String? @db.Text
+
+  sentAt      DateTime? @db.Timestamptz(3)
+  respondedAt DateTime? @db.Timestamptz(3)
+  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
+}
+
+// ── Org-wide Settings ──────────────────────────────────────
+
+// Singleton row (fixed id) holding org-wide branding + global fallback
+// defaults for the Location personalization chain (e.g. default widget
+// config when neither a Branch nor its Regional Hub nor Corporate HQ has
+// configured one). lib/settings.ts always upserts on this fixed id, so the
+// row self-heals on first read — no seed step required.
+model Setting {
+  id                   String   @id @default("singleton")
+  companyName          String   @default("Company Portal")
+  tagline              String?
+  logoMimeType         String?
+  globalWidgetDefaults Json?
+  updatedAt            DateTime @updatedAt @db.Timestamptz(3)
+}
+
+// ── Automation Engine (IFTTT-style rules) ─────────────────
+
+model AutomationRule {
+  id          String            @id @default(cuid())
+  name        String
+  triggerType AutomationTrigger
+  isActive    Boolean           @default(true)
+
+  // Conditions (all optional — an unset condition matches any value)
+  conditionBoardId     String?
+  conditionBoard       Board?          @relation("AutomationConditionBoard", fields: [conditionBoardId], references: [id], onDelete: SetNull)
+  conditionPriority    TicketPriority?
+  conditionLocationId  String?
+  conditionLocation    Location?       @relation("AutomationConditionLocation", fields: [conditionLocationId], references: [id], onDelete: SetNull)
+  // Only meaningful for triggerType IDLE_TIME_EXCEEDED — minutes since Ticket.updatedAt
+  // before the rule is considered a match. Required by app-level validation for that
+  // trigger type only; the column stays nullable since it's meaningless for the others.
+  conditionIdleMinutes Int?
+
+  // Action (exactly one actionType; only the matching action* fields are used)
+  actionType       AutomationAction
+  actionAssigneeId String?
+  actionAssignee   User?            @relation("AutomationActionAssignee", fields: [actionAssigneeId], references: [id], onDelete: SetNull)
+  actionStatus     TicketStatus?
+  actionPriority   TicketPriority?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([triggerType, isActive])
+}
+
+// ── Ticketing backlog (ported from psa's todo2.md batch) ──
+
+// Join table linking a Ticket to a KbArticle — mirrors TicketAsset's exact
+// shape. A ticket can reference several relevant articles; an article can be
+// linked from many tickets over its lifetime.
+model TicketKbArticle {
+  id          String    @id @default(cuid())
+  ticketId    Int
+  ticket      Ticket    @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  kbArticleId String
+  kbArticle   KbArticle @relation(fields: [kbArticleId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  @@unique([ticketId, kbArticleId])
+  @@index([kbArticleId])
+}
+
+// Structured "who changed what" trail, written alongside (not instead of) the
+// existing synthetic internal TicketComment rows in app/tickets/actions.ts —
+// those stay for the human-readable comment thread; this is for querying
+// change history (e.g. "all priority changes this month").
+model TicketAuditLog {
+  id       String  @id @default(cuid())
+  ticketId Int
+  ticket   Ticket  @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  actorId  String?
+  actor    User?   @relation("TicketAuditLogActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  field    String
+  oldValue String?
+  newValue String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([ticketId])
+}
+
+// A user's saved ticket-list filter — query is the same shape as the query
+// params app/tickets/page.tsx reads (status/priority/boardId/locationId/q),
+// stored as JSON rather than modeled field-by-field so new filter params
+// don't require a migration.
+model SavedTicketFilter {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name   String
+  query  Json
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([userId])
+}
+
+// "Notify me when this ticket changes" — separate from assigneeId, which is
+// "who owns this ticket."
+model TicketWatcher {
+  id       String @id @default(cuid())
+  ticketId Int
+  ticket   Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  userId   String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  @@unique([ticketId, userId])
+  @@index([userId])
+}
+
+// Directional link between two tickets (RELATED or DUPLICATE). Deliberately
+// not a merge — merge semantics (status changes, comment/time-log migration)
+// are a separate, bigger design question left for a future pass.
+model TicketLink {
+  id             String         @id @default(cuid())
+  ticketId       Int
+  ticket         Ticket         @relation("TicketLinkFrom", fields: [ticketId], references: [id], onDelete: Cascade)
+  linkedTicketId Int
+  linkedTicket   Ticket         @relation("TicketLinkTo", fields: [linkedTicketId], references: [id], onDelete: Cascade)
+  type           TicketLinkType @default(RELATED)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  @@unique([ticketId, linkedTicketId])
+  @@index([linkedTicketId])
+}
+
+// In-app notification — unlike psa (staff-only bell), every employee needs
+// this here, since any employee can be an approver or a requester.
+model Notification {
+  id       String           @id @default(cuid())
+  userId   String
+  user     User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ticketId Int?
+  ticket   Ticket?          @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  type     NotificationType
+  message  String
+
+  readAt    DateTime? @db.Timestamptz(3)
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+
+  @@index([userId, readAt])
+  @@index([ticketId])
+}
+
+// ═════════════════════════════════════════════════════════════
+// Multi-Stage Approval Workflow Engine (new — see ARCHITECTURE.md)
+// ═════════════════════════════════════════════════════════════
+
+enum ApprovalRequestType {
+  PURCHASE_QUOTE
+  EXPENSE_AUTHORIZATION
+  ACCESS_REQUEST
+  HARDWARE_PROVISIONING
+  POLICY_EXCEPTION
+  OTHER
+}
+
+enum ApprovalRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum ApprovalStageStatus {
+  PENDING
+  IN_PROGRESS
+  APPROVED
+  REJECTED
+  SKIPPED
+}
+
+// ALL = every StageApprover must APPROVE; ANY = the first decision (in
+// either direction) decides the stage; N_OF_M = requiredApprovals approvals
+// needed regardless of how many approvers are on the stage.
+enum ApprovalStageMode {
+  ALL
+  ANY
+  N_OF_M
+}
+
+// How a stage template's approver(s) are resolved into concrete User rows
+// when a request is created. REQUESTER_MANAGER/managerLevelsUp walks the
+// requester's User.managerId chain; DEPARTMENT_MANAGER resolves the
+// requester's Department.managerId; LOCATION_ADMIN resolves a
+// LOCATION_ADMIN-role User scoped to the requester's Location (via
+// LocationMember); PERMISSION_GROUP/ROLE fan out to every matching User.
+enum ApproverSourceType {
+  SPECIFIC_USER
+  ROLE
+  PERMISSION_GROUP
+  REQUESTER_MANAGER
+  DEPARTMENT_MANAGER
+  LOCATION_ADMIN
+}
+
+enum ApprovalDecision {
+  APPROVED
+  REJECTED
+}
+
+// Named, reusable chain definition (e.g. "Purchase > $10,000", "Software
+// Access Request"). Editing this never rewrites history of in-flight
+// ApprovalRequests — see ApprovalStageInstance.
+model ApprovalWorkflowTemplate {
+  id              String              @id @default(cuid())
+  name            String              @unique
+  requestType     ApprovalRequestType
+  description     String?             @db.Text
+  isActive        Boolean             @default(true)
+  // Optional routing/reporting threshold — e.g. this template only applies to
+  // requests at or above this amount. Left null for templates that aren't
+  // amount-gated (e.g. access requests).
+  amountThreshold Decimal?            @db.Decimal(12, 2)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  stages   ApprovalStageTemplate[]
+  requests ApprovalRequest[]
+
+  @@index([requestType, isActive])
+}
+
+// One ordered stage within a template (e.g. "Direct Manager" -> "Department
+// VP" -> "Finance Manager").
+model ApprovalStageTemplate {
+  id                 String                   @id @default(cuid())
+  workflowTemplateId String
+  workflowTemplate   ApprovalWorkflowTemplate @relation(fields: [workflowTemplateId], references: [id], onDelete: Cascade)
+
+  order Int
+  name  String
+
+  mode              ApprovalStageMode @default(ALL)
+  requiredApprovals Int? // only meaningful when mode = N_OF_M
+
+  approverSourceType        ApproverSourceType
+  approverUserId            String?
+  approverUser              User?              @relation(fields: [approverUserId], references: [id], onDelete: SetNull)
+  approverPermissionGroupId String?
+  approverPermissionGroup   PermissionGroup?   @relation(fields: [approverPermissionGroupId], references: [id], onDelete: SetNull)
+  approverRole              Role?
+  // Levels up the requester's manager chain for REQUESTER_MANAGER (1 = direct
+  // manager, 2 = manager's manager, ...). Ignored for other source types.
+  managerLevelsUp           Int?               @default(1)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  instances ApprovalStageInstance[]
+
+  @@unique([workflowTemplateId, order])
+}
+
+// One in-flight (or resolved) approval instance.
+model ApprovalRequest {
+  id                 String                   @id @default(cuid())
+  workflowTemplateId String
+  workflowTemplate   ApprovalWorkflowTemplate @relation(fields: [workflowTemplateId], references: [id])
+
+  requesterId String
+  requester   User   @relation("ApprovalRequester", fields: [requesterId], references: [id])
+
+  title       String
+  description String?             @db.Text
+  requestType ApprovalRequestType // denormalized copy of the template's type at creation time
+  // Free-form request-specific data (vendor, quote line items, access system
+  // name, expense receipt refs, ...) — deliberately not modeled field-by-
+  // field since request types vary widely; amount is pulled out below since
+  // it drives stage-template threshold routing/reporting.
+  payload     Json?
+  amount      Decimal?            @db.Decimal(12, 2)
+
+  status            ApprovalRequestStatus @default(PENDING)
+  currentStageOrder Int                   @default(1)
+
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(3)
+  decidedAt DateTime? @db.Timestamptz(3)
+
+  stageInstances ApprovalStageInstance[]
+  auditLogs      ApprovalAuditLog[]
+
+  @@index([requesterId])
+  @@index([status])
+  @@index([workflowTemplateId])
+}
+
+// Materialized copy of a stage template for one specific request — order,
+// name, and mode are copied at creation time so later template edits/
+// renames never retroactively change a request already in flight.
+model ApprovalStageInstance {
+  id                String                 @id @default(cuid())
+  approvalRequestId String
+  approvalRequest   ApprovalRequest        @relation(fields: [approvalRequestId], references: [id], onDelete: Cascade)
+  stageTemplateId   String?
+  stageTemplate     ApprovalStageTemplate? @relation(fields: [stageTemplateId], references: [id], onDelete: SetNull)
+
+  order             Int
+  name              String
+  mode              ApprovalStageMode
+  requiredApprovals Int?
+
+  status      ApprovalStageStatus @default(PENDING)
+  startedAt   DateTime?           @db.Timestamptz(3)
+  completedAt DateTime?           @db.Timestamptz(3)
+
+  approvers StageApprover[]
+
+  @@unique([approvalRequestId, order])
+}
+
+// One mutable row per expected approver on a stage instance. decision is
+// NULL while pending — "who still needs to act" is simply `WHERE decision IS
+// NULL`. magicLinkToken is the one-click email-approval credential, modeled
+// directly on psa's CSAT "unguessable id is the auth" pattern: only usable
+// while decision is still null.
+model StageApprover {
+  id              String                @id @default(cuid())
+  stageInstanceId String
+  stageInstance   ApprovalStageInstance @relation(fields: [stageInstanceId], references: [id], onDelete: Cascade)
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  // If this approver had an active ApprovalDelegate at the moment the stage
+  // was materialized, decisions are expected from delegatedToId instead —
+  // recorded here rather than mutating userId so the original approver of
+  // record is preserved for audit purposes.
+  delegatedToId String?
+
+  decision  ApprovalDecision?
+  comment   String?           @db.Text
+  decidedAt DateTime?         @db.Timestamptz(3)
+
+  magicLinkToken String    @unique @default(cuid())
+  notifiedAt     DateTime? @db.Timestamptz(3)
+
+  @@unique([stageInstanceId, userId])
+  @@index([userId, decision])
+}
+
+// Append-only history — every transition (approved/rejected/delegated/
+// escalated/reminder-sent) as an immutable row, satisfying the "mandatory
+// auditable... timestamps, comments, digital sign-off" requirement. Mirrors
+// psa's TicketAuditLog exactly. StageApprover is current state; this is
+// history — kept as two tables, not folded together, since one is mutable
+// and the other must never change once written.
+model ApprovalAuditLog {
+  id                String          @id @default(cuid())
+  approvalRequestId String
+  approvalRequest   ApprovalRequest @relation(fields: [approvalRequestId], references: [id], onDelete: Cascade)
+
+  actorId String? // null for system/automated actions (escalation, auto-skip)
+  actor   User?   @relation("ApprovalAuditLogActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  action  String // e.g. "STAGE_APPROVED", "REQUEST_REJECTED", "DELEGATED", "ESCALATED", "REMINDER_SENT"
+  comment String? @db.Text
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([approvalRequestId])
+}
+
+// Temporary out-of-office delegation for an approver's queue. Scoped to a
+// single workflow template if set, otherwise applies to all of the
+// delegator's pending/future approvals within the date range.
+model ApprovalDelegate {
+  id          String @id @default(cuid())
+  delegatorId String
+  delegator   User   @relation("ApprovalDelegator", fields: [delegatorId], references: [id], onDelete: Cascade)
+  delegateId  String
+  delegate    User   @relation("ApprovalDelegate", fields: [delegateId], references: [id], onDelete: Cascade)
+
+  workflowTemplateId String?
+
+  startsAt DateTime @db.Timestamptz(3)
+  endsAt   DateTime @db.Timestamptz(3)
+  isActive Boolean  @default(true)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([delegatorId, startsAt, endsAt])
+}
