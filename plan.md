@@ -34,7 +34,7 @@ Redesign `app/portal/page.tsx` (the `EMPLOYEE` home) to foreground: the resolved
 
 **Done when:** logging in as an `EMPLOYEE` shows a portal-shaped home with real location content and clearly-labeled placeholders for news/events, not a ticket list first.
 
-## Phase 5 — News/Communications: schema + admin CMS
+## Phase 5 — News/Communications: schema + admin CMS ✅ done
 
 New models: a `NewsPost` (title, rich body, author, published/draft state, publish date) with audience targeting (by `Department`, `Location`, `Role` — reuse the same targeting shape `Board`/`Ticket` already use, not a new pattern). Admin authoring UI: list/create/edit/publish, WYSIWYG or markdown editor (`components/ui/markdown-editor.tsx` already exists from KB articles — reuse it rather than adding a new rich-text dependency unless it can't support what's needed). Any post image goes through Phase 2's storage abstraction.
 

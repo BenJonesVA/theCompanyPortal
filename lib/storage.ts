@@ -40,6 +40,15 @@ export function bannerStorageKey(locationId: string): string {
   return `banner-${locationId}`;
 }
 
+// NewsPost cover images — same one-per-row shape and reasoning as location
+// banners above (see app/api/news/[id]/cover/route.ts).
+export const MAX_NEWS_COVER_BYTES = MAX_BANNER_IMAGE_BYTES;
+export const MAX_NEWS_COVER_MB = MAX_BANNER_IMAGE_MB;
+
+export function newsCoverStorageKey(postId: string): string {
+  return `news-cover-${postId}`;
+}
+
 const LOGO_KEY = "branding-logo";
 const ATTACHMENT_PREFIX = "attachments/";
 

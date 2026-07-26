@@ -115,6 +115,7 @@ enum Permission {
   MANAGE_USERS
   MANAGE_LOCATION_PAGES
   MANAGE_APPROVAL_WORKFLOWS
+  MANAGE_NEWS
   VIEW_REPORTS
 }
 
@@ -197,6 +198,7 @@ model User {
   delegationsReceived     ApprovalDelegate[]      @relation("ApprovalDelegate")
   locationPageConfigEdits LocationPageConfig[]    @relation("LocationPageConfigEditor")
   approvalStageTemplates  ApprovalStageTemplate[]
+  newsPosts               NewsPost[]              @relation("NewsPostAuthor")
 
   @@index([role])
   @@index([locationId])
@@ -222,8 +224,9 @@ model Department {
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
-  employees User[]  @relation("DepartmentEmployees")
+  employees User[]     @relation("DepartmentEmployees")
   boards    Board[]
+  newsPosts NewsPost[]
 
   @@index([managerId])
 }
@@ -255,6 +258,7 @@ model Location {
   automationConditions AutomationRule[]    @relation("AutomationConditionLocation")
   slaPolicies          LocationSlaPolicy[]
   pageConfig           LocationPageConfig?
+  newsPosts            NewsPost[]
 
   @@index([parentId])
   @@index([type])
@@ -278,7 +282,7 @@ model LocationMember {
 // Presentation-only customization of a location's landing page (custom
 // banner, local widgets, floor plan link). Deliberately does NOT hold
 // announcements/emergency-alert content — that's the News/CMS module
-// (Phase 4), not this table, to avoid double-modeling content. See
+// (NewsPost, below), not this table, to avoid double-modeling content. See
 // ARCHITECTURE.md for how this resolves up the Location parent chain when a
 // branch has no config of its own.
 model LocationPageConfig {
@@ -303,6 +307,55 @@ model LocationPageConfig {
   updatedByUserId String?
   updatedByUser   User?    @relation("LocationPageConfigEditor", fields: [updatedByUserId], references: [id], onDelete: SetNull)
   updatedAt       DateTime @updatedAt @db.Timestamptz(3)
+}
+
+enum NewsPostStatus {
+  DRAFT
+  PUBLISHED
+}
+
+// Company news/announcements. Audience targeting is three independent,
+// nullable-condition axes — the same "unset = matches everything on that
+// axis" shape AutomationRule's conditionBoardId/conditionPriority/
+// conditionLocationId already use, not a new pattern. targetLocationId also
+// reaches every location *below* it in the hierarchy (a post targeted at
+// CORPORATE_HQ reaches every Regional Hub/Branch), resolved via the same
+// ancestor-chain walk lib/locations.ts uses for page-config inheritance —
+// see lib/news.ts and ARCHITECTURE.md section B.
+model NewsPost {
+  id          String         @id @default(cuid())
+  title       String
+  body        String         @db.Text
+  status      NewsPostStatus @default(DRAFT)
+  // Set (to now(), if not already in the future) the moment status first
+  // becomes PUBLISHED — visibility queries filter on both status and this
+  // field, so the two must never disagree (see lib/news.ts).
+  publishedAt DateTime?      @db.Timestamptz(3)
+
+  authorId String
+  author   User   @relation("NewsPostAuthor", fields: [authorId], references: [id])
+
+  targetDepartmentId String?
+  targetDepartment   Department? @relation(fields: [targetDepartmentId], references: [id], onDelete: SetNull)
+  targetLocationId   String?
+  targetLocation     Location?   @relation(fields: [targetLocationId], references: [id], onDelete: SetNull)
+  // Exact-match, not "this role and above" — a post targeted at EMPLOYEE is
+  // invisible to a DEPARTMENT_MANAGER. Admin UI labels this "Visible only
+  // to" to avoid the natural misreading.
+  targetRole         Role?
+
+  // Same pairing convention as LocationPageConfig.bannerImageUrl/
+  // bannerImageMimeType: coverImageUrl is always our own
+  // /api/news/[id]/cover route when set, never an admin-typed external URL.
+  coverImageUrl      String?
+  coverImageMimeType String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([status, publishedAt])
+  @@index([targetDepartmentId])
+  @@index([targetLocationId])
 }
 
 // ── Boards & Board Membership (RBAC scoping) ──────────────

@@ -40,6 +40,10 @@ export default async function LocationDetailPage({
   const isManagerRole = user.role === Role.SUPER_ADMIN || user.role === Role.DEPARTMENT_MANAGER;
   const canManage = isManagerRole || (user.permissions?.includes(Permission.MANAGE_LOCATIONS) ?? false);
   const canManageAssets = isManagerRole || (user.permissions?.includes(Permission.MANAGE_ASSETS) ?? false);
+  // A dedicated permission (not MANAGE_LOCATIONS) — lets a PermissionGroup
+  // grant "edit this location's portal page" without also granting the
+  // ability to rename/deactivate locations or edit SLA overrides.
+  const canManagePageConfig = isManagerRole || (user.permissions?.includes(Permission.MANAGE_LOCATION_PAGES) ?? false);
 
   const { id } = await params;
 
@@ -318,7 +322,7 @@ export default async function LocationDetailPage({
           </p>
         </CardHeader>
 
-        {canManage && (
+        {canManagePageConfig && (
           <div className="border-b border-border p-4">
           <ActionForm
             action={upsertPageConfigForLocation}

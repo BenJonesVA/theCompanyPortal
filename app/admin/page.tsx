@@ -97,6 +97,12 @@ const SECTIONS: Section[] = [
     description: "IFTTT-style rules that react to ticket events.",
     permission: Permission.MANAGE_AUTOMATION,
   },
+  {
+    href: "/admin/news",
+    label: "Company News",
+    description: "Author and target news posts shown on the portal home.",
+    permission: Permission.MANAGE_NEWS,
+  },
 ];
 
 export default async function AdminHubPage() {

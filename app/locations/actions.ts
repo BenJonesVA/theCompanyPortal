@@ -168,7 +168,7 @@ export async function upsertLocationPageConfig(
   _prevState: FormActionState,
   formData: FormData
 ): Promise<FormActionState> {
-  const user = await requirePermission(Permission.MANAGE_LOCATIONS, Role.SUPER_ADMIN, Role.DEPARTMENT_MANAGER);
+  const user = await requirePermission(Permission.MANAGE_LOCATION_PAGES, Role.SUPER_ADMIN, Role.DEPARTMENT_MANAGER);
 
   const bannerText = String(formData.get("bannerText") ?? "").trim() || null;
   const floorPlanUrl = String(formData.get("floorPlanUrl") ?? "").trim() || null;
@@ -229,7 +229,7 @@ export async function upsertLocationPageConfig(
 // Removes just the banner image, leaving bannerText/floorPlanUrl/widgetConfig
 // untouched — mirrors deleteLocationSlaPolicy's scoped-removal shape.
 export async function deleteLocationPageBanner(locationId: string) {
-  await requirePermission(Permission.MANAGE_LOCATIONS, Role.SUPER_ADMIN, Role.DEPARTMENT_MANAGER);
+  await requirePermission(Permission.MANAGE_LOCATION_PAGES, Role.SUPER_ADMIN, Role.DEPARTMENT_MANAGER);
 
   await deleteAttachmentFile(bannerStorageKey(locationId));
   await prisma.locationPageConfig.updateMany({

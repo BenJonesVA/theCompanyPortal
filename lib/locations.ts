@@ -16,6 +16,45 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * Batched resolver for "what are this location's ancestor ids" (nearest —
+ * the location itself — first, furthest ancestor last), shared by every
+ * feature that needs to walk Location.parentId: `loadLocationPageResolver`
+ * below for per-field config inheritance, and lib/news.ts for "does this
+ * post's targetLocationId cover this employee's location" (a post targeted
+ * at CORPORATE_HQ reaches every Regional Hub/Branch beneath it — the same
+ * chain, read in the opposite direction).
+ *
+ * Loads the whole Location table once regardless of how many locationIds
+ * get resolved afterward — bounded by the org's location count, not by
+ * ticket/attachment volume, so this stays free of N+1 no matter the caller.
+ */
+export async function loadLocationAncestryResolver(): Promise<(locationId: string) => string[]> {
+  const locations = await prisma.location.findMany({ select: { id: true, parentId: true } });
+  const parentById = new Map(locations.map((l) => [l.id, l.parentId]));
+  const cache = new Map<string, string[]>();
+
+  return (locationId: string): string[] => {
+    const cached = cache.get(locationId);
+    if (cached) return cached;
+
+    // Guards against a corrupt cyclical parentId chain with `seen` rather
+    // than trusting the data is a tree, since a cycle here would otherwise
+    // hang.
+    const chain: string[] = [];
+    let currentId: string | null | undefined = locationId;
+    const seen = new Set<string>();
+    while (currentId && !seen.has(currentId)) {
+      seen.add(currentId);
+      chain.push(currentId);
+      currentId = parentById.get(currentId);
+    }
+
+    cache.set(locationId, chain);
+    return chain;
+  };
+}
+
+/**
  * Resolves the effective location-page config for a single location.
  * See `loadLocationPageResolver` for the batched variant and the resolution
  * rules — this just wraps it for a one-off single-location lookup.
@@ -40,49 +79,28 @@ export async function resolveLocationPage(locationId: string): Promise<ResolvedL
  * widgetConfig overrides matching keys moving from CORPORATE_HQ down to the
  * target location, so a location can override a single widget without
  * losing the rest of what it inherited.
- *
- * Locations and their page configs are both bounded by the size of the
- * org's location tree (not ticket/attachment volume), so it's simplest —
- * and still free of N+1 regardless of how many locations get resolved on
- * one page — to load all of both up front rather than walk each requested
- * location's ancestor chain with its own round trip.
  */
 export async function loadLocationPageResolver(
   locationIds: string[]
 ): Promise<(locationId: string) => ResolvedLocationPage> {
-  const [locations, configs, settings] = await Promise.all([
-    prisma.location.findMany({ select: { id: true, parentId: true } }),
+  const [ancestryOf, configs, settings] = await Promise.all([
+    loadLocationAncestryResolver(),
     prisma.locationPageConfig.findMany(),
     getSettings(),
   ]);
 
-  const parentById = new Map(locations.map((l) => [l.id, l.parentId]));
   const configById = new Map(configs.map((c) => [c.locationId, c]));
   const globalWidgetDefaults = isPlainObject(settings.globalWidgetDefaults) ? settings.globalWidgetDefaults : {};
-
-  // Nearest (the location itself) first, furthest ancestor last. Guards
-  // against a corrupt cyclical parentId chain with `seen` rather than
-  // trusting the data is a tree, since a cycle here would otherwise hang.
-  function chainFor(locationId: string): PageConfigRow[] {
-    const chain: PageConfigRow[] = [];
-    let currentId: string | null | undefined = locationId;
-    const seen = new Set<string>();
-    while (currentId && !seen.has(currentId)) {
-      seen.add(currentId);
-      const config = configById.get(currentId);
-      if (config) chain.push(config);
-      currentId = parentById.get(currentId);
-    }
-    return chain;
-  }
-
   const cache = new Map<string, ResolvedLocationPage>();
 
   return (locationId: string): ResolvedLocationPage => {
     const cached = cache.get(locationId);
     if (cached) return cached;
 
-    const chain = chainFor(locationId);
+    // Nearest (the location itself) first, furthest ancestor last.
+    const chain: PageConfigRow[] = ancestryOf(locationId)
+      .map((id) => configById.get(id))
+      .filter((c): c is NonNullable<typeof c> => c !== undefined);
 
     const bannerImageUrl = chain.find((c) => c.bannerImageUrl)?.bannerImageUrl ?? null;
     const bannerText = chain.find((c) => c.bannerText)?.bannerText ?? null;

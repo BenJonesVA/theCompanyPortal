@@ -68,6 +68,11 @@ export function getPermissionCatalog(): { key: Permission; label: string; descri
       description: "Create and edit multi-stage approval workflow templates.",
     },
     {
+      key: Permission.MANAGE_NEWS,
+      label: "Manage news",
+      description: "Author, target, and publish company news posts.",
+    },
+    {
       key: Permission.VIEW_REPORTS,
       label: "View reports",
       description: "Access the Reports dashboard (SLA compliance, utilization, CSAT, etc.).",
