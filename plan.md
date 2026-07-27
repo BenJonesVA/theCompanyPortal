@@ -52,7 +52,7 @@ New models: `CalendarEvent` (title, description, start/end, location/department/
 
 **Done when:** an admin can create a scoped event and an employee can RSVP to it.
 
-## Phase 8 — Calendar on the dashboard + aggregated views
+## Phase 8 — Calendar on the dashboard + aggregated views ✅ done
 
 Wire upcoming/targeted events into Phase 4's "Upcoming Events" placeholder, plus a full aggregated calendar view (filterable: global/dept/location/maintenance) reusing Phase 3's resolver logic for scope-fallback the same way news does.
 

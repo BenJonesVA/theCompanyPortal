@@ -3,6 +3,7 @@ import { requireAuth } from "@/lib/rbac";
 import { prisma } from "@/lib/prisma";
 import { resolveLocationPage, type ResolvedLocationPage } from "@/lib/locations";
 import { listVisibleNewsPosts } from "@/lib/news";
+import { listVisibleCalendarEvents, CALENDAR_CATEGORY_LABELS } from "@/lib/calendar";
 import { markdownSnippet } from "@/lib/format";
 import { StatusBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -11,6 +12,17 @@ import { Card, CardHeader } from "@/components/ui/card";
 const OPEN_STATUSES = ["OPEN", "IN_PROGRESS", "WAITING_ON_REQUESTER"] as const;
 const OPEN_TICKETS_PREVIEW = 4;
 const NEWS_PREVIEW = 3;
+const EVENTS_PREVIEW = 3;
+
+function formatEventRange(startsAt: Date, endsAt: Date): string {
+  const start = startsAt.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  const sameDay = startsAt.toDateString() === endsAt.toDateString();
+  const end = endsAt.toLocaleString(
+    "en-US",
+    sameDay ? { hour: "numeric", minute: "2-digit" } : { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }
+  );
+  return `${start} – ${end}`;
+}
 
 const EMPTY_PAGE: ResolvedLocationPage = { bannerImageUrl: null, bannerText: null, floorPlanUrl: null, widgetConfig: {} };
 
@@ -32,7 +44,7 @@ function QuickLink({ href, label, primary = false }: { href: string; label: stri
 export default async function PortalPage() {
   const user = await requireAuth();
 
-  const [location, openTickets, resolvedPage, newsPosts] = await Promise.all([
+  const [location, openTickets, resolvedPage, newsPosts, calendarEvents] = await Promise.all([
     user.locationId ? prisma.location.findUnique({ where: { id: user.locationId } }) : null,
     prisma.ticket.findMany({
       where: { requesterId: user.id, status: { in: [...OPEN_STATUSES] } },
@@ -41,10 +53,12 @@ export default async function PortalPage() {
     }),
     user.locationId ? resolveLocationPage(user.locationId) : Promise.resolve(EMPTY_PAGE),
     listVisibleNewsPosts(user),
+    listVisibleCalendarEvents(user),
   ]);
 
   const previewTickets = openTickets.slice(0, OPEN_TICKETS_PREVIEW);
   const previewNews = newsPosts.slice(0, NEWS_PREVIEW);
+  const previewEvents = calendarEvents.slice(0, EVENTS_PREVIEW);
 
   return (
     <div className="flex flex-col gap-6">
@@ -79,10 +93,9 @@ export default async function PortalPage() {
         {resolvedPage.floorPlanUrl && <QuickLink href={resolvedPage.floorPlanUrl} label="Floor plan" />}
       </div>
 
-      {/* Company News — targeted by department/location/role via
-          lib/news.ts's listVisibleNewsPosts (Phase 5/6). Upcoming Events
-          stays a placeholder until Phase 7/8 (Calendar) lands, which will
-          reuse the same targeting shape. */}
+      {/* Company News and Upcoming Events — both targeted by department/
+          location via lib/news.ts / lib/calendar.ts's shared ancestor-chain
+          resolver (see lib/locations.ts). */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader className="flex items-center justify-between">
@@ -133,12 +146,37 @@ export default async function PortalPage() {
           )}
         </Card>
         <Card>
-          <CardHeader>
+          <CardHeader className="flex items-center justify-between">
             <h2 className="text-[13.5px] font-semibold text-fg">Upcoming events</h2>
+            {calendarEvents.length > EVENTS_PREVIEW && (
+              <Link href="/portal/events">
+                <Button variant="ghost" size="sm">
+                  View all
+                </Button>
+              </Link>
+            )}
           </CardHeader>
-          <p className="px-5 py-8 text-center text-[13.5px] text-fg-muted">
-            Nothing scheduled yet.
-          </p>
+          {previewEvents.length === 0 ? (
+            <p className="px-5 py-8 text-center text-[13.5px] text-fg-muted">
+              Nothing scheduled yet.
+            </p>
+          ) : (
+            <ul className="divide-y divide-grid">
+              {previewEvents.map((event) => (
+                <li key={event.id}>
+                  <Link
+                    href="/portal/events"
+                    className="flex flex-col gap-0.5 px-5 py-3.5 hover:bg-surface-2"
+                  >
+                    <div className="truncate text-[13.5px] font-semibold text-fg">{event.title}</div>
+                    <div className="text-[12px] text-fg-subtle">
+                      {formatEventRange(event.startsAt, event.endsAt)} · {CALENDAR_CATEGORY_LABELS[event.category]}
+                    </div>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
         </Card>
       </div>
 

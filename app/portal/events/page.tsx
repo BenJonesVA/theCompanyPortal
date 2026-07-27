@@ -1,9 +1,17 @@
 import { RsvpStatus } from "@prisma/client";
 import { requireAuth } from "@/lib/rbac";
-import { listVisibleCalendarEvents, CALENDAR_CATEGORY_LABELS } from "@/lib/calendar";
+import { listVisibleCalendarEvents, CALENDAR_CATEGORY_LABELS, type CalendarEventScopeFilter } from "@/lib/calendar";
 import { rsvpToEvent } from "./actions";
 import { Button } from "@/components/ui/button";
-import { Card, CardHeader } from "@/components/ui/card";
+import { Card } from "@/components/ui/card";
+
+const SCOPE_OPTIONS: { value: CalendarEventScopeFilter | ""; label: string }[] = [
+  { value: "", label: "All" },
+  { value: "global", label: "Global" },
+  { value: "department", label: "My department" },
+  { value: "location", label: "My location" },
+  { value: "maintenance", label: "Maintenance windows" },
+];
 
 function formatRange(startsAt: Date, endsAt: Date): string {
   const start = startsAt.toLocaleString("en-US", {
@@ -27,9 +35,18 @@ const RSVP_OPTIONS: { status: RsvpStatus; label: string }[] = [
   { status: "NOT_GOING", label: "Not going" },
 ];
 
-export default async function PortalEventsPage() {
+export default async function PortalEventsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
+}) {
   const user = await requireAuth();
-  const events = await listVisibleCalendarEvents(user);
+  const params = await searchParams;
+  const scopeParam = typeof params.scope === "string" ? params.scope : "";
+  const scope = SCOPE_OPTIONS.some((o) => o.value === scopeParam)
+    ? (scopeParam as CalendarEventScopeFilter | "")
+    : "";
+  const events = await listVisibleCalendarEvents(user, { scope: scope || undefined });
 
   return (
     <div className="mx-auto flex max-w-2xl flex-col gap-4">
@@ -40,9 +57,31 @@ export default async function PortalEventsPage() {
         </p>
       </div>
 
+      <form method="get" className="flex flex-wrap items-end gap-3">
+        <div>
+          <label className="mb-[6px] block text-xs font-medium text-fg-muted">Scope</label>
+          <select
+            name="scope"
+            defaultValue={scope}
+            className="rounded-lg border border-border-strong bg-surface px-3 py-[7px] text-[13.5px] text-fg"
+          >
+            {SCOPE_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <Button type="submit" variant="secondary">
+          Apply
+        </Button>
+      </form>
+
       <Card>
         {events.length === 0 ? (
-          <p className="px-5 py-10 text-center text-[13.5px] text-fg-muted">Nothing scheduled yet.</p>
+          <p className="px-5 py-10 text-center text-[13.5px] text-fg-muted">
+            {scope ? "No events match this filter." : "Nothing scheduled yet."}
+          </p>
         ) : (
           <ul className="divide-y divide-grid">
             {events.map((event) => {

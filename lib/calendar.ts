@@ -36,18 +36,49 @@ function targetingWhere(user: CalendarAudienceUser, locationIds: string[]): Pris
   };
 }
 
+// The four facets the Phase 8 aggregated calendar view filters by (per
+// plan.md) — "global"/"department"/"location" narrow to how the event is
+// *targeted*, "maintenance" narrows by category instead. Not mutually
+// exclusive in the data (a department-targeted event can also be a
+// maintenance window) but presented as a single select since a user only
+// ever wants to slice one way at a time.
+export type CalendarEventScopeFilter = "global" | "department" | "location" | "maintenance";
+
+function scopeWhere(scope: CalendarEventScopeFilter | undefined): Prisma.CalendarEventWhereInput {
+  switch (scope) {
+    case "global":
+      return { targetDepartmentId: null, targetLocationId: null };
+    case "department":
+      return { targetDepartmentId: { not: null } };
+    case "location":
+      return { targetLocationId: { not: null } };
+    case "maintenance":
+      return { category: CalendarEventCategory.MAINTENANCE_WINDOW };
+    default:
+      return {};
+  }
+}
+
 /**
  * Every CalendarEvent visible to `user` that hasn't ended yet, soonest
  * first. targetLocationId also reaches every location *below* it in the
  * hierarchy (an event targeted at the user's Regional Hub or Corporate HQ is
  * visible too), resolved via lib/locations.ts's ancestor-chain walk — a user
  * with no locationId only sees events with no location targeting at all.
+ *
+ * `options.scope` additionally narrows the result to one of the four facets
+ * the full calendar view filters by — never widens past what's already
+ * visible to the user.
  */
-export async function listVisibleCalendarEvents(user: CalendarAudienceUser, now: Date = new Date()) {
+export async function listVisibleCalendarEvents(
+  user: CalendarAudienceUser,
+  options?: { now?: Date; scope?: CalendarEventScopeFilter }
+) {
+  const now = options?.now ?? new Date();
   const locationIds = user.locationId ? (await loadLocationAncestryResolver())(user.locationId) : [];
 
   return prisma.calendarEvent.findMany({
-    where: { endsAt: { gte: now }, ...targetingWhere(user, locationIds) },
+    where: { endsAt: { gte: now }, ...targetingWhere(user, locationIds), ...scopeWhere(options?.scope) },
     orderBy: { startsAt: "asc" },
     include: { rsvps: { select: { userId: true, status: true } } },
   });
