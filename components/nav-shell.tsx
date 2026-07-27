@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Permission, Role } from "@prisma/client";
 import { auth } from "@/auth";
 import { getSettings } from "@/lib/settings";
+import { ROLE_LABELS } from "@/lib/permissions";
 import { LogoutButton } from "@/components/logout-button";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { DensityToggle } from "@/components/density-toggle";
@@ -15,6 +16,7 @@ const WORKSPACE_LINKS = [
   { href: "/assets", label: "Assets" },
   { href: "/kb", label: "Knowledge Base" },
   { href: "/schedule", label: "Schedule" },
+  { href: "/portal/approvals", label: "Approvals" },
 ];
 
 // Permissions that unlock at least one card on the /admin hub (see that
@@ -34,6 +36,7 @@ const HUB_PERMISSIONS: Permission[] = [
   Permission.MANAGE_AUTOMATION,
   Permission.MANAGE_NEWS,
   Permission.MANAGE_EVENTS,
+  Permission.MANAGE_APPROVAL_WORKFLOWS,
 ];
 
 // Additive: a link shows for SUPER_ADMIN/DEPARTMENT_MANAGER as before, or
@@ -63,6 +66,7 @@ const EMPLOYEE_NAV_LINKS = [
   { href: "/portal", label: "Portal" },
   { href: "/portal/kb", label: "Knowledge Base" },
   { href: "/portal/events", label: "Events" },
+  { href: "/portal/approvals", label: "Approvals" },
   { href: "/portal/tickets", label: "My Tickets" },
 ];
 
@@ -176,7 +180,7 @@ export async function NavShell({ children }: { children: React.ReactNode }) {
           </div>
           <div className="min-w-0 flex-1 leading-[1.25]">
             <div className="truncate text-[12.5px] font-semibold text-fg">{session.user.name}</div>
-            <div className="truncate text-[11px] text-fg-subtle">{session.user.role}</div>
+            <div className="truncate text-[11px] text-fg-subtle">{ROLE_LABELS[session.user.role]}</div>
           </div>
           <LogoutButton />
         </div>

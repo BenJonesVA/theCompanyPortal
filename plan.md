@@ -58,7 +58,7 @@ Wire upcoming/targeted events into Phase 4's "Upcoming Events" placeholder, plus
 
 **Done when:** the portal home shows real upcoming events for that employee, and a full calendar page can filter across all scopes.
 
-## Phase 9 — Approval Workflow Engine: usable via web UI
+## Phase 9 — Approval Workflow Engine: usable via web UI ✅ done
 
 The schema (`ApprovalWorkflowTemplate`/`ApprovalStageTemplate`/`ApprovalRequest`/`ApprovalStageInstance`/`StageApprover`/`ApprovalAuditLog`/`ApprovalDelegate`) is fully designed already (`ARCHITECTURE.md` section A) — build the admin template builder, the request-submission form, and the approve/reject UI (including delegate management). **No automated notifications/reminders/escalation yet** — an approver finds their pending approvals by visiting the app, decisions are recorded, stages advance, audit logs write correctly. This phase proves the state machine works end-to-end through the UI alone.
 

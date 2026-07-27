@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { MarkdownEditor } from "@/components/ui/markdown-editor";
 import { MAX_NEWS_COVER_MB } from "@/lib/storage";
+import { ROLE_LABELS } from "@/lib/permissions";
 
 const ROLE_OPTIONS: Role[] = [Role.SUPER_ADMIN, Role.LOCATION_ADMIN, Role.DEPARTMENT_MANAGER, Role.EMPLOYEE];
 
@@ -118,7 +119,7 @@ export default async function EditNewsPostPage({ params }: { params: Promise<{ i
                 <option value="">Any role</option>
                 {ROLE_OPTIONS.map((role) => (
                   <option key={role} value={role}>
-                    {role.replace(/_/g, " ")}
+                    {ROLE_LABELS[role]}
                   </option>
                 ))}
               </select>

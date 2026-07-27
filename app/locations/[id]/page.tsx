@@ -6,6 +6,7 @@ import { requireAuth } from "@/lib/rbac";
 import { parseFieldSchema } from "@/lib/asset-fields";
 import { resolveLocationPage } from "@/lib/locations";
 import { MAX_BANNER_IMAGE_MB } from "@/lib/storage";
+import { ROLE_LABELS } from "@/lib/permissions";
 import {
   createAsset,
   updateLocation,
@@ -189,7 +190,7 @@ export default async function LocationDetailPage({
                 </td>
                 <td className="px-4 py-row-py text-fg-muted">{employee.email}</td>
                 <td className="px-4 py-row-py text-fg-muted">{employee.title ?? "—"}</td>
-                <td className="px-4 py-row-py text-fg-muted">{employee.role}</td>
+                <td className="px-4 py-row-py text-fg-muted">{ROLE_LABELS[employee.role]}</td>
               </tr>
             ))}
             {location.employees.length === 0 && (

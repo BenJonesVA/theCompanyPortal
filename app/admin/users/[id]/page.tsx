@@ -7,6 +7,7 @@ import { ActionForm } from "@/components/ui/action-form";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader } from "@/components/ui/card";
 import { DeleteButton } from "@/components/ui/delete-button";
+import { ROLE_LABELS } from "@/lib/permissions";
 
 const ROLE_OPTIONS = [Role.SUPER_ADMIN, Role.LOCATION_ADMIN, Role.DEPARTMENT_MANAGER, Role.EMPLOYEE] as const;
 
@@ -88,7 +89,7 @@ export default async function UserDetailPage({
             >
               {ROLE_OPTIONS.map((role) => (
                 <option key={role} value={role}>
-                  {role}
+                  {ROLE_LABELS[role]}
                 </option>
               ))}
             </select>

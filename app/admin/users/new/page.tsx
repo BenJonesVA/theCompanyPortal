@@ -5,6 +5,7 @@ import { createUser } from "../actions";
 import { ActionForm } from "@/components/ui/action-form";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { ROLE_LABELS } from "@/lib/permissions";
 
 const ROLE_OPTIONS = [Role.SUPER_ADMIN, Role.LOCATION_ADMIN, Role.DEPARTMENT_MANAGER, Role.EMPLOYEE] as const;
 
@@ -64,7 +65,7 @@ export default async function NewUserPage({
             >
               {ROLE_OPTIONS.map((role) => (
                 <option key={role} value={role}>
-                  {role}
+                  {ROLE_LABELS[role]}
                 </option>
               ))}
             </select>

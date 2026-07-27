@@ -1,4 +1,14 @@
-import { Permission } from "@prisma/client";
+import { Permission, Role } from "@prisma/client";
+
+// Human-readable role names — used everywhere a Role is shown to a user
+// instead of the raw enum value (e.g. "Department Manager", not
+// "DEPARTMENT_MANAGER").
+export const ROLE_LABELS: Record<Role, string> = {
+  [Role.SUPER_ADMIN]: "Super Admin",
+  [Role.LOCATION_ADMIN]: "Location Admin",
+  [Role.DEPARTMENT_MANAGER]: "Department Manager",
+  [Role.EMPLOYEE]: "Employee",
+};
 
 export function getPermissionCatalog(): { key: Permission; label: string; description: string }[] {
   return [

@@ -109,6 +109,12 @@ const SECTIONS: Section[] = [
     description: "Holidays, department/office events, and maintenance windows.",
     permission: Permission.MANAGE_EVENTS,
   },
+  {
+    href: "/admin/approval-workflows",
+    label: "Approval Workflows",
+    description: "Multi-stage approval chains for purchases, expenses, access requests, and more.",
+    permission: Permission.MANAGE_APPROVAL_WORKFLOWS,
+  },
 ];
 
 export default async function AdminHubPage() {

@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Permission, Role } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { requirePermission } from "@/lib/rbac";
+import { ROLE_LABELS } from "@/lib/permissions";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 
@@ -27,7 +28,7 @@ function targetSummary(post: {
   const parts: string[] = [];
   if (post.targetDepartment) parts.push(post.targetDepartment.name);
   if (post.targetLocation) parts.push(post.targetLocation.name);
-  if (post.targetRole) parts.push(`Role: ${post.targetRole.replace(/_/g, " ")}`);
+  if (post.targetRole) parts.push(`Role: ${ROLE_LABELS[post.targetRole]}`);
   return parts.length > 0 ? parts.join(" · ") : "Everyone";
 }
 
