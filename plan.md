@@ -70,9 +70,15 @@ Layered in the automation Phase 9 deliberately deferred: magic-link one-click em
 
 **Done when:** an approver gets a real email with a working one-click link, and a stale pending approval past its age threshold triggers a reminder/escalation automatically.
 
-## Phase 11 — Analytics, Delegation polish, SSO prep
+## Phase 11 — Analytics, Delegation polish, SSO prep ✅ done
 
 Lowest priority, last: SLA/ticket reporting depth, cross-cutting reporting on approvals/news/events engagement, delegate-mode polish beyond Phase 10's baseline, and SSO integration hooks (SAML/Azure AD/Okta) on top of the existing NextAuth Credentials setup — matches the original spec's Phase 5.
+
+SLA/ticket reporting was already thorough pre-Phase-11 (`app/reports/page.tsx` — SLA compliance by priority, resolution time, effort/leaderboard, CSAT). Net-new: **Approval throughput** (submitted/approved/rejected/cancelled/pending/escalated counts, avg time-to-decision, per-workflow breakdown), **Event RSVP engagement** (going/maybe/not-going totals + per-event breakdown), and **News reach** — deliberately scoped to a *targeting* summary, not an open/view rate, since no read-tracking model exists in the schema and one wasn't added just for this. CSV export (`app/reports/export/route.ts`) was left un-extended.
+
+**Delegate-mode polish:** a "you're currently covering for" section on `/portal/approvals/delegates` (the reverse of the existing delegator-facing list — this direction genuinely didn't exist before), and the hub's per-row delegation note now names who you're covering for instead of a generic "(delegated to you)".
+
+**SSO prep:** Azure AD (Microsoft Entra ID) and Okta added to `auth.ts` as opt-in-by-env-var providers (unset = Credentials-only, unchanged) — see `.env.example`. New `signIn` callback rejects any non-Credentials sign-in unless an existing, active `User` row matches the IdP email (this app has pre-provisioned employees, not open signup); `jwt` callback normalizes `token.sub` to that `User.id` regardless of provider. **SAML (BoxyHQ Jackson) deliberately left out** — it requires a separate broker service, a bigger infra lift than "hooks." **No live IdP exists in this environment** — the signIn/jwt logic is code-complete and the Credentials regression path was verified live, but the actual OAuth branch is unverified against a real Azure AD/Okta tenant.
 
 ---
 

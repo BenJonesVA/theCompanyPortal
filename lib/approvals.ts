@@ -486,6 +486,7 @@ export async function getMyPendingApprovals(userId: string) {
       stageInstance: { status: "IN_PROGRESS" },
     },
     include: {
+      user: { select: { name: true } },
       stageInstance: {
         include: { approvalRequest: { include: { requester: { select: { name: true } } } } },
       },

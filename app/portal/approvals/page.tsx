@@ -70,7 +70,7 @@ export default async function PortalApprovalsPage() {
                     <div className="truncate text-[13.5px] font-semibold text-fg">{approver.stageInstance.approvalRequest.title}</div>
                     <div className="mt-0.5 text-[12px] text-fg-subtle">
                       From {approver.stageInstance.approvalRequest.requester.name} · Stage: {approver.stageInstance.name}
-                      {approver.delegatedToId === user.id && approver.userId !== user.id && " (delegated to you)"}
+                      {approver.delegatedToId === user.id && approver.userId !== user.id && ` (covering for ${approver.user.name})`}
                     </div>
                   </div>
                   <Button variant="secondary" size="sm">

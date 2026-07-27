@@ -3,6 +3,8 @@ import { prisma } from "@/lib/prisma";
 import { requirePermission } from "@/lib/rbac";
 import { getSlaStatus, loadSlaPolicyResolver } from "@/lib/sla";
 import { formatDuration } from "@/lib/format";
+import { CALENDAR_CATEGORY_LABELS } from "@/lib/calendar";
+import { ROLE_LABELS } from "@/lib/permissions";
 import { Card, CardHeader } from "@/components/ui/card";
 import { Bar } from "@/components/ui/bar-chart";
 import { ColumnChart } from "@/components/ui/column-chart";
@@ -36,6 +38,10 @@ export default async function ReportsPage() {
     createdForTrend,
     resolvedForTrend,
     csatSurveysInPeriod,
+    approvalRequestsInPeriod,
+    escalationsInPeriod,
+    eventsInPeriod,
+    newsPostsInPeriod,
   ] = await Promise.all([
     prisma.ticket.count({ where: { createdAt: { gte: periodStart } } }),
     prisma.ticket.findMany({
@@ -71,6 +77,26 @@ export default async function ReportsPage() {
     prisma.csatResponse.findMany({
       where: { createdAt: { gte: periodStart } },
       select: { rating: true, respondedAt: true },
+    }),
+    prisma.approvalRequest.findMany({
+      where: { createdAt: { gte: periodStart } },
+      select: { status: true, createdAt: true, decidedAt: true, workflowTemplate: { select: { name: true } } },
+    }),
+    prisma.approvalAuditLog.count({ where: { action: "ESCALATED", createdAt: { gte: periodStart } } }),
+    prisma.calendarEvent.findMany({
+      where: { startsAt: { gte: periodStart } },
+      select: { id: true, title: true, startsAt: true, category: true, rsvps: { select: { status: true } } },
+    }),
+    prisma.newsPost.findMany({
+      where: { status: "PUBLISHED", publishedAt: { gte: periodStart } },
+      select: {
+        id: true,
+        title: true,
+        publishedAt: true,
+        targetRole: true,
+        targetDepartment: { select: { name: true } },
+        targetLocation: { select: { name: true } },
+      },
     }),
   ]);
 
@@ -186,6 +212,62 @@ export default async function ReportsPage() {
     { label: "Avg. resolution time", value: avgResolutionMs !== null ? formatDuration(avgResolutionMs) : "—" },
     { label: "SLA compliance", value: overallRate !== null ? `${overallRate.toFixed(0)}%` : "—" },
   ];
+
+  // ── Approval throughput (requests created in the window) ──
+  const approvalCounts = { submitted: approvalRequestsInPeriod.length, approved: 0, rejected: 0, cancelled: 0, pending: 0 };
+  for (const r of approvalRequestsInPeriod) {
+    if (r.status === "APPROVED") approvalCounts.approved++;
+    else if (r.status === "REJECTED") approvalCounts.rejected++;
+    else if (r.status === "CANCELLED") approvalCounts.cancelled++;
+    else approvalCounts.pending++;
+  }
+  const decidedApprovals = approvalRequestsInPeriod.filter((r) => r.decidedAt !== null);
+  const avgDecisionMs =
+    decidedApprovals.length > 0
+      ? decidedApprovals.reduce((sum, r) => sum + Math.max(0, r.decidedAt!.getTime() - r.createdAt.getTime()), 0) /
+        decidedApprovals.length
+      : null;
+  const approvalsByTemplate = new Map<string, number>();
+  for (const r of approvalRequestsInPeriod) {
+    approvalsByTemplate.set(r.workflowTemplate.name, (approvalsByTemplate.get(r.workflowTemplate.name) ?? 0) + 1);
+  }
+  const approvalTemplateBreakdown = Array.from(approvalsByTemplate.entries())
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count);
+
+  // ── Event RSVP engagement (events starting in the window) ──
+  const rsvpTotals = { going: 0, maybe: 0, notGoing: 0 };
+  for (const e of eventsInPeriod) {
+    for (const r of e.rsvps) {
+      if (r.status === "GOING") rsvpTotals.going++;
+      else if (r.status === "MAYBE") rsvpTotals.maybe++;
+      else rsvpTotals.notGoing++;
+    }
+  }
+  const eventBreakdown = eventsInPeriod
+    .map((e) => ({
+      id: e.id,
+      title: e.title,
+      startsAt: e.startsAt,
+      category: e.category,
+      going: e.rsvps.filter((r) => r.status === "GOING").length,
+      maybe: e.rsvps.filter((r) => r.status === "MAYBE").length,
+      notGoing: e.rsvps.filter((r) => r.status === "NOT_GOING").length,
+    }))
+    .sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime());
+
+  // ── News reach (posts published in the window) — targeting summary only:
+  // there's no per-user read-tracking model in the schema, so this reports
+  // who a post was *aimed at*, not who actually opened it. Don't overclaim.
+  const newsBreakdown = newsPostsInPeriod.map((p) => ({
+    id: p.id,
+    title: p.title,
+    publishedAt: p.publishedAt!,
+    targeting:
+      [p.targetDepartment?.name, p.targetLocation?.name, p.targetRole ? ROLE_LABELS[p.targetRole] : null]
+        .filter(Boolean)
+        .join(", ") || "Everyone",
+  }));
 
   return (
     <div className="flex flex-col gap-4">
@@ -349,6 +431,133 @@ export default async function ReportsPage() {
               <div className="mt-1 text-[22px] font-bold text-fg">{csatSurveysInPeriod.length}</div>
             </div>
           </div>
+        )}
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <h2 className="text-[13.5px] font-semibold text-fg">Approval throughput</h2>
+        </CardHeader>
+        {approvalCounts.submitted === 0 ? (
+          <p className="px-5 py-6 text-sm text-fg-muted">No approval requests submitted in this window.</p>
+        ) : (
+          <>
+            <div className="grid grid-cols-3 gap-4 p-5 sm:grid-cols-6">
+              {[
+                { label: "Submitted", value: approvalCounts.submitted },
+                { label: "Approved", value: approvalCounts.approved },
+                { label: "Rejected", value: approvalCounts.rejected },
+                { label: "Cancelled", value: approvalCounts.cancelled },
+                { label: "Still pending", value: approvalCounts.pending },
+                { label: "Escalated", value: escalationsInPeriod },
+              ].map((s) => (
+                <div key={s.label}>
+                  <div className="text-[11.5px] font-medium text-fg-muted">{s.label}</div>
+                  <div className="mt-1 text-[20px] font-bold text-fg">{s.value}</div>
+                </div>
+              ))}
+            </div>
+            <div className="px-5 pb-2 text-[12.5px] text-fg-muted">
+              Avg. time to decision: <span className="font-semibold text-fg">{avgDecisionMs !== null ? formatDuration(avgDecisionMs) : "—"}</span>
+            </div>
+            {approvalTemplateBreakdown.length > 0 && (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border bg-surface-2 text-left text-[11px] font-semibold uppercase tracking-wider text-fg-subtle">
+                    <th className="px-5 py-2.5">Workflow</th>
+                    <th className="px-5 py-2.5">Requests submitted</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {approvalTemplateBreakdown.map((t) => (
+                    <tr key={t.name} className="border-b border-grid last:border-0">
+                      <td className="px-5 py-3 font-medium text-fg">{t.name}</td>
+                      <td className="px-5 py-3 font-mono text-fg-muted">{t.count}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </>
+        )}
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <h2 className="text-[13.5px] font-semibold text-fg">Event RSVP engagement</h2>
+        </CardHeader>
+        {eventBreakdown.length === 0 ? (
+          <p className="px-5 py-6 text-sm text-fg-muted">No events starting in this window.</p>
+        ) : (
+          <>
+            <div className="grid grid-cols-3 gap-4 p-5">
+              <div>
+                <div className="text-[11.5px] font-medium text-fg-muted">Going</div>
+                <div className="mt-1 text-[20px] font-bold text-green">{rsvpTotals.going}</div>
+              </div>
+              <div>
+                <div className="text-[11.5px] font-medium text-fg-muted">Maybe</div>
+                <div className="mt-1 text-[20px] font-bold text-amber">{rsvpTotals.maybe}</div>
+              </div>
+              <div>
+                <div className="text-[11.5px] font-medium text-fg-muted">Not going</div>
+                <div className="mt-1 text-[20px] font-bold text-fg-muted">{rsvpTotals.notGoing}</div>
+              </div>
+            </div>
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border bg-surface-2 text-left text-[11px] font-semibold uppercase tracking-wider text-fg-subtle">
+                  <th className="px-5 py-2.5">Event</th>
+                  <th className="px-5 py-2.5">Category</th>
+                  <th className="px-5 py-2.5">Going</th>
+                  <th className="px-5 py-2.5">Maybe</th>
+                  <th className="px-5 py-2.5">Not going</th>
+                </tr>
+              </thead>
+              <tbody>
+                {eventBreakdown.map((e) => (
+                  <tr key={e.id} className="border-b border-grid last:border-0">
+                    <td className="px-5 py-3 font-medium text-fg">{e.title}</td>
+                    <td className="px-5 py-3 text-fg-muted">{CALENDAR_CATEGORY_LABELS[e.category]}</td>
+                    <td className="px-5 py-3 font-mono text-fg-muted">{e.going}</td>
+                    <td className="px-5 py-3 font-mono text-fg-muted">{e.maybe}</td>
+                    <td className="px-5 py-3 font-mono text-fg-muted">{e.notGoing}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
+        )}
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <h2 className="text-[13.5px] font-semibold text-fg">News reach</h2>
+          <p className="mt-0.5 text-[11.5px] text-fg-subtle">
+            Who each post was targeted at — there's no read-tracking, so this isn't an open/view rate.
+          </p>
+        </CardHeader>
+        {newsBreakdown.length === 0 ? (
+          <p className="px-5 py-6 text-sm text-fg-muted">No posts published in this window.</p>
+        ) : (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border bg-surface-2 text-left text-[11px] font-semibold uppercase tracking-wider text-fg-subtle">
+                <th className="px-5 py-2.5">Post</th>
+                <th className="px-5 py-2.5">Published</th>
+                <th className="px-5 py-2.5">Targeted at</th>
+              </tr>
+            </thead>
+            <tbody>
+              {newsBreakdown.map((p) => (
+                <tr key={p.id} className="border-b border-grid last:border-0">
+                  <td className="px-5 py-3 font-medium text-fg">{p.title}</td>
+                  <td className="px-5 py-3 text-fg-muted">{p.publishedAt.toLocaleDateString()}</td>
+                  <td className="px-5 py-3 text-fg-muted">{p.targeting}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         )}
       </Card>
     </div>
