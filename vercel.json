@@ -1,6 +1,7 @@
 {
   "crons": [
     { "path": "/api/cron/idle-sweep", "schedule": "*/15 * * * *" },
-    { "path": "/api/cron/sla-breach-check", "schedule": "*/15 * * * *" }
+    { "path": "/api/cron/sla-breach-check", "schedule": "*/15 * * * *" },
+    { "path": "/api/cron/approval-sweep", "schedule": "*/15 * * * *" }
   ]
 }

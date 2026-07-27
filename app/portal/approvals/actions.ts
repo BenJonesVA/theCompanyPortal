@@ -4,6 +4,8 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { requireAuth } from "@/lib/rbac";
 import { submitApprovalRequest, recordDecision, cancelApprovalRequest } from "@/lib/approvals";
+import { syncApprovalNotifications } from "@/lib/approval-notifications";
+import { prisma } from "@/lib/prisma";
 import type { FormActionState } from "@/components/ui/action-form";
 import type { DeleteActionState } from "@/components/ui/delete-button";
 
@@ -27,6 +29,8 @@ export async function submitRequest(_prevState: FormActionState, formData: FormD
   const result = await submitApprovalRequest(user.id, workflowTemplateId, { title, description, amount });
   if ("error" in result) return result;
 
+  await syncApprovalNotifications(result.requestId);
+
   revalidatePath("/portal/approvals");
   redirect(`/portal/approvals/${result.requestId}`);
 }
@@ -42,6 +46,12 @@ export async function decide(
 
   const result = await recordDecision(user.id, stageApproverId, decision, comment);
   if ("error" in result) return result;
+
+  const approver = await prisma.stageApprover.findUnique({
+    where: { id: stageApproverId },
+    select: { stageInstance: { select: { approvalRequestId: true } } },
+  });
+  if (approver) await syncApprovalNotifications(approver.stageInstance.approvalRequestId);
 
   revalidatePath("/portal/approvals");
   return null;

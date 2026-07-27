@@ -1,6 +1,6 @@
 # Architecture: Approval State Machine & Location Personalization
 
-This document explains, at the database level, the two subsystems that are new or most significantly reworked relative to `psa` (the MSP ticketing app this project was forked from — see `plan.md` for the full fork rationale and model-by-model mapping). Both are schema-only in this pass: the tables exist and the state they represent is fully expressible, but the orchestration code (Inngest functions, UI) that drives transitions is a later phase.
+This document explains, at the database level, the two subsystems that are new or most significantly reworked relative to `psa` (the MSP ticketing app this project was forked from — see `plan.md` for the full fork rationale and model-by-model mapping). Both started schema-only; the Approval State Machine's UI and orchestration are now built (see section A's "Orchestration" for how notifications/reminders/escalation actually work).
 
 ## A. Multi-Stage Approval State Machine
 
@@ -9,7 +9,7 @@ This document explains, at the database level, the two subsystems that are new o
 Two layers, deliberately kept separate:
 
 - **Definition** (`ApprovalWorkflowTemplate` → `ApprovalStageTemplate`): an admin-authored, reusable chain — e.g. "Purchase > $10,000" with three ordered stages (Direct Manager → Department VP → Finance Manager). Each stage template declares *how* to find its approver(s) via `approverSourceType`: a specific `User`, a `Role`, a `PermissionGroup`, the requester's manager chain (`REQUESTER_MANAGER` + `managerLevelsUp`), their `Department.manager`, or the `LOCATION_ADMIN` for their `Location`.
-- **Instance** (`ApprovalRequest` → `ApprovalStageInstance` → `StageApprover`): created when an employee submits a request. Creating it **materializes** a copy of every stage — `order`, `name`, `mode`, `requiredApprovals` are copied onto `ApprovalStageInstance`, and each stage's approver source is *resolved to concrete `User` rows* at that moment, written as `StageApprover` rows.
+- **Instance** (`ApprovalRequest` → `ApprovalStageInstance` → `StageApprover`): created when an employee submits a request. Creating it **materializes** a copy of every stage's structure up front — `order`, `name`, `mode`, `requiredApprovals` are copied onto an `ApprovalStageInstance` row for *every* stage — but each stage's approver source is only *resolved to concrete `User` rows* (written as `StageApprover`) lazily, the moment that specific stage transitions to `IN_PROGRESS`, not all at once at creation. This is what makes delegation (below) correct: a delegate registered after submission but before a later stage is reached is still honored, since that stage's `StageApprover` rows don't exist until it's actually entered.
 
 This split matters because workflow templates are living documents (finance changes the approval threshold, HR adds a stage) but a request already halfway through its chain must not have its remaining stages silently rewritten. Once materialized, an instance is self-contained and immune to later template edits.
 
@@ -37,13 +37,13 @@ Every `StageApprover` carries its own `magicLinkToken` (an unguessable `cuid`, g
 
 `StageApprover` is **current state** (mutable — one row per approver per stage, decision/comment/decidedAt overwritten once). `ApprovalAuditLog` is **history** (append-only — one row per event: `STAGE_APPROVED`, `REQUEST_REJECTED`, `DELEGATED`, `ESCALATED`, `REMINDER_SENT`, each with actor, timestamp, and comment). This mirrors `psa`'s `TicketAuditLog` pattern exactly, and keeping state and history in two tables rather than folding them into one avoids ever needing to mutate a row that's supposed to be a permanent record.
 
-### Orchestration (next phase, not built yet)
+### Orchestration
 
-The schema is deliberately orchestration-agnostic — all approval state lives in Postgres, so nothing here depends on a specific job runner. The plan is Inngest-driven:
+The schema is deliberately orchestration-agnostic — all approval state lives in Postgres, so nothing here depends on a specific job runner. An earlier pass of this doc sketched an Inngest-driven design, but this repo has no Inngest (or any other job runner) anywhere in it — the only scheduled-job mechanism that actually exists is the bearer-authenticated `app/api/cron/*` route pattern (`lib/cron-auth.ts`), built for a self-hosted docker-compose/VM deploy rather than Vercel specifically. Orchestration was built on that existing pattern instead of introducing a new dependency:
 
-- `approval/request.created` — materialize stage 1, notify its `StageApprover`s.
-- `approval/decision.recorded` — re-evaluate the current stage's completion condition; advance, reject, or notify the next stage.
-- a scheduled function scanning stale `StageApprover` rows (`decidedAt IS NULL` past some age) to send reminders, and past a longer threshold, escalate (write an `ESCALATED` audit row, optionally add a fallback approver).
+- **Event-driven notifications fire synchronously**, not via a queued event. `lib/approval-notifications.ts`'s `syncApprovalNotifications(requestId)` is called directly from every Server Action that mutates approval state (`submitRequest`, `decide`, and the magic-link `decideViaToken`) right after the mutation commits — it notifies any `StageApprover` with `notifiedAt IS NULL` on the now-current stage (covers both "stage 1 just materialized" and "stage N+1 just advanced into"), and separately notifies the requester once the request reaches `APPROVED`/`REJECTED`.
+- **The scheduled sweep** (`app/api/cron/approval-sweep/route.ts`, `runApprovalReminderSweep()`) handles what a synchronous call can't: reminders for `StageApprover` rows notified more than 24h ago and still `decision IS NULL`, and escalation for `ApprovalStageInstance`s `IN_PROGRESS` for more than 72h — writing an `ESCALATED` audit row (deduped by checking for one already written since `startedAt`) and notifying the requester plus `SUPER_ADMIN`/`DEPARTMENT_MANAGER` overseers. It does **not** add a fallback approver or otherwise mutate stage state — that would shift `N_OF_M` math (`total - rejections < required`) under a running stage; escalation here is notify-and-audit only.
+- **One-click magic-link approval** (`app/approve/[token]/`) reuses `recordDecision` directly — same race guard, same "stage no longer active" check as the authenticated portal path — with the actor recorded as whoever the token was actually issued to (the delegate if one was substituted, else the original approver).
 
 ## B. Location-Aware Personalization Engine
 

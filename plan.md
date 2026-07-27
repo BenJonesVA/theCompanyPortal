@@ -64,9 +64,9 @@ The schema (`ApprovalWorkflowTemplate`/`ApprovalStageTemplate`/`ApprovalRequest`
 
 **Done when:** a multi-stage request can be submitted, routed through manager-chain/role/permission-group resolution, approved/rejected stage-by-stage, and shows a correct audit trail — entirely via clicking through the web app.
 
-## Phase 10 — Approval orchestration (Inngest)
+## Phase 10 — Approval orchestration ✅ done
 
-Layer in the automation Phase 9 deliberately deferred: magic-link one-click email approval (`StageApprover.magicLinkToken`), notification on stage advance, and scheduled reminder/escalation for stale approvals — as Inngest functions/events, per the design in `ARCHITECTURE.md` section A ("Orchestration"). This is an additive automation layer on top of Phase 9's already-correct state machine, not a redesign of it.
+Layered in the automation Phase 9 deliberately deferred: magic-link one-click email approval (`StageApprover.magicLinkToken` via `/approve/[token]`), notification on stage advance/decision, and scheduled reminder/escalation for stale approvals. **Built on the existing `app/api/cron/*` bearer-authenticated route pattern (`lib/cron-auth.ts`), not Inngest** — this repo has no job-runner dependency anywhere in it, and ARCHITECTURE.md's own "orchestration-agnostic" framing meant that wasn't actually load-bearing; introducing one purely for this phase would have added an external webhook + signing-key surface to what's otherwise a self-hosted, internal-only app. See `ARCHITECTURE.md` section A ("Orchestration") for the actual design: synchronous notify-on-mutation (`lib/approval-notifications.ts`) plus a scheduled reminder/escalation sweep (`app/api/cron/approval-sweep`).
 
 **Done when:** an approver gets a real email with a working one-click link, and a stale pending approval past its age threshold triggers a reminder/escalation automatically.
 

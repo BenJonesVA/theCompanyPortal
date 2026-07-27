@@ -40,7 +40,10 @@ export const config = {
   // role the bearer/token checks play for cron and inbound email. The
   // branding logo route is deliberately public — it renders on the
   // unauthenticated login page.
+  // Approval magic-link route added alongside csat: an unauthenticated
+  // approver reaches it via the unguessable StageApprover.magicLinkToken in
+  // the URL, same trust model as the CSAT survey id.
   matcher: [
-    "/((?!api/auth|api/cron|api/inbound-email|api/branding|csat|login|_next/static|_next/image|favicon.ico).*)",
+    "/((?!api/auth|api/cron|api/inbound-email|api/branding|csat|approve|login|_next/static|_next/image|favicon.ico).*)",
   ],
 };
